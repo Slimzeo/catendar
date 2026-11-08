@@ -418,7 +418,7 @@ func sourceURL(accountID string, uidValidity, uid uint32, messageID string) stri
 func messageRefFromSource(value, accountID string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme != "catendar" || parsed.Host != "email" {
-		return "", errors.New("invalid CATendar email link")
+		return "", errors.New("invalid catendar email link")
 	}
 	if strings.TrimPrefix(parsed.Path, "/") != accountID {
 		return "", errors.New("email link belongs to another account")

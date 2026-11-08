@@ -6,11 +6,13 @@ import type {
   EmailAccount,
   EmailAccountInput,
   EmailMessage,
-  EventInput
+  EventInput,
+  EventPhase
 } from '@/types'
+import { isEventPhase } from '@/constants/eventPhases'
 
 // Wails generates individual functions in frontend/wailsjs/go/main/CalendarApp
-import { GetEvents, CreateEvent, UpdateEvent, DeleteEvent } from '../../wailsjs/go/main/CalendarApp'
+import { GetEvents, CreateEvent, UpdateEvent, DeleteEvent, SetEventPhase } from '../../wailsjs/go/main/CalendarApp'
 import {
   CancelAISync,
   GetAISyncSetup,
@@ -22,18 +24,34 @@ import {
   TestEmailAccount
 } from '../../wailsjs/go/main/AISyncApp'
 
+function normalizeEvent(raw: Awaited<ReturnType<typeof CreateEvent>>): CalendarEvent {
+  return {
+    ...raw,
+    phase: isEventPhase(raw.phase) ? raw.phase : 'todo',
+    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined
+  }
+}
+
 export const eventApi = {
   getEvents: async (start: string, end: string): Promise<CalendarEvent[]> => {
     if (!('go' in window)) return []
-    return GetEvents(start, end)
+    const events = await GetEvents(start, end)
+    return events.map(normalizeEvent)
   },
 
   createEvent: async (input: EventInput): Promise<CalendarEvent> => {
-    return CreateEvent(input)
+    const created = await CreateEvent(input)
+    return normalizeEvent(created)
   },
 
   updateEvent: async (id: number, input: EventInput): Promise<CalendarEvent> => {
-    return UpdateEvent(id, input)
+    const updated = await UpdateEvent(id, input)
+    return normalizeEvent(updated)
+  },
+
+  setEventPhase: async (id: number, phase: EventPhase): Promise<CalendarEvent> => {
+    const updated = await SetEventPhase(id, phase)
+    return normalizeEvent(updated)
   },
 
   deleteEvent: async (id: number): Promise<void> => {

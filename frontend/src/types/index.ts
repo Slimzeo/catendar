@@ -1,3 +1,5 @@
+export type EventPhase = 'todo' | 'progressing' | 'done'
+
 export interface CalendarEvent {
   id: number
   title: string
@@ -7,6 +9,8 @@ export interface CalendarEvent {
   allDay: boolean
   description: string
   bold: boolean
+  phase: EventPhase
+  deadline?: string
   createdAt: string
   updatedAt: string
 }
@@ -19,6 +23,8 @@ export interface EventInput {
   allDay: boolean
   description: string
   bold: boolean
+  phase?: EventPhase
+  deadline?: string
 }
 
 export interface DayCell {

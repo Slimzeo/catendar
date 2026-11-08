@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { isSameMonth } from 'date-fns'
 import { NButton, NTooltip } from 'naive-ui'
+import type { CalendarView } from '@/stores/calendar'
 import { useCalendarStore } from '@/stores/calendar'
 import { useThemeStore } from '@/stores/theme'
 import { setAlwaysOnTop } from '@/wails'
@@ -19,7 +19,26 @@ const emit = defineEmits<{
 const calendarStore = useCalendarStore()
 const themeStore = useThemeStore()
 const isPinned = ref(false)
-const isCurrentMonth = computed(() => isSameMonth(calendarStore.currentDate, new Date()))
+
+const periodLabel = computed(() => (
+  calendarStore.viewMode === 'board' ? calendarStore.dayLabel : calendarStore.monthLabel
+))
+const navigationLabel = computed(() => (
+  calendarStore.viewMode === 'board' ? 'Day navigation' : 'Month navigation'
+))
+const previousLabel = computed(() => (
+  calendarStore.viewMode === 'board' ? 'Previous day' : 'Previous month'
+))
+const nextLabel = computed(() => (
+  calendarStore.viewMode === 'board' ? 'Next day' : 'Next month'
+))
+const isAtToday = computed(() => (
+  calendarStore.viewMode === 'board' ? calendarStore.isToday : calendarStore.isCurrentMonth
+))
+
+function switchView(view: CalendarView) {
+  calendarStore.setView(view)
+}
 
 function togglePin() {
   const nextState = !isPinned.value
@@ -31,24 +50,40 @@ function togglePin() {
 
 <template>
   <header class="toolbar">
-    <button class="brand" type="button" title="Go to today" @click="calendarStore.goToToday">
+    <button class="brand" type="button" title="Go to today" aria-label="Go to today" @click="calendarStore.goToToday">
       <img src="/catendar.png" alt="" />
-      <span class="brand-name"><strong>CAT</strong>endar</span>
+      <span class="brand-name"><strong>cat</strong>endar</span>
     </button>
 
-    <nav class="month-nav" aria-label="Month navigation">
-      <n-button quaternary circle size="small" aria-label="Previous month" @click="calendarStore.prevMonth">
+    <nav class="calendar-nav" :aria-label="navigationLabel">
+      <div class="view-switch" role="group" aria-label="View">
+        <button
+          type="button"
+          :aria-pressed="calendarStore.viewMode === 'board'"
+          @click="switchView('board')"
+        >
+          Board
+        </button>
+        <button
+          type="button"
+          :aria-pressed="calendarStore.viewMode === 'month'"
+          @click="switchView('month')"
+        >
+          Month
+        </button>
+      </div>
+      <n-button quaternary circle size="small" :aria-label="previousLabel" @click="calendarStore.prevPeriod">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5 5.5 5 5.5" /></svg>
       </n-button>
-      <h1 class="month-label" aria-live="polite">{{ calendarStore.monthLabel }}</h1>
-      <n-button quaternary circle size="small" aria-label="Next month" @click="calendarStore.nextMonth">
+      <h1 class="calendar-label" aria-live="polite">{{ periodLabel }}</h1>
+      <n-button quaternary circle size="small" :aria-label="nextLabel" @click="calendarStore.nextPeriod">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
       </n-button>
       <n-button
         quaternary
         size="small"
         class="today-button"
-        :disabled="isCurrentMonth"
+        :disabled="isAtToday"
         @click="calendarStore.goToToday"
       >
         Today
@@ -63,6 +98,7 @@ function togglePin() {
         class="ai-sync-button"
         :loading="syncing"
         :disabled="syncing"
+        :aria-label="syncing ? 'Syncing' : 'AI Sync'"
         @click="emit('ai-sync')"
       >
         <template #icon>
@@ -73,7 +109,14 @@ function togglePin() {
         <span class="ai-sync-label">{{ syncing ? 'Syncing' : 'AI Sync' }}</span>
       </n-button>
 
-      <n-button type="primary" size="small" class="new-event-button" @click="emit('create')">
+      <n-button
+        v-if="calendarStore.viewMode === 'month'"
+        type="primary"
+        size="small"
+        class="new-event-button"
+        aria-label="New event"
+        @click="emit('create')"
+      >
         <template #icon>
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
         </template>
@@ -170,7 +213,7 @@ function togglePin() {
   position: relative;
   z-index: 5;
   display: grid;
-  grid-template-columns: minmax(128px, 1fr) auto minmax(360px, 1fr);
+  grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
   min-height: 58px;
   align-items: center;
   gap: 16px;
@@ -182,7 +225,7 @@ function togglePin() {
 }
 
 .brand,
-.month-nav,
+.calendar-nav,
 .toolbar-actions {
   -webkit-app-region: no-drag;
 }
@@ -228,13 +271,44 @@ function togglePin() {
   font-weight: 750;
 }
 
-.month-nav {
+.calendar-nav {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.month-label {
+.view-switch {
+  display: flex;
+  margin-right: 6px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg-secondary);
+}
+
+.view-switch button {
+  padding: 3px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.view-switch button[aria-pressed='true'] {
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.view-switch button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.calendar-label {
   min-width: 156px;
   margin: 0 3px;
   color: var(--text-primary);
@@ -244,7 +318,7 @@ function togglePin() {
   letter-spacing: -0.025em;
   line-height: 1.2;
   text-align: center;
-  text-wrap: balance;
+  white-space: nowrap;
 }
 
 .toolbar-actions {
@@ -295,21 +369,21 @@ function togglePin() {
     display: none;
   }
 
-  .month-nav {
+  .calendar-nav {
     justify-self: center;
   }
 
-  .month-label {
+  .calendar-label {
     min-width: 132px;
     font-size: 15px;
   }
 }
 
-@media (max-width: 580px) {
+@media (max-width: 720px) {
   .toolbar {
-    grid-template-columns: auto 1fr auto;
-    min-height: 50px;
-    gap: 4px;
+    grid-template-columns: auto 1fr;
+    min-height: auto;
+    row-gap: 5px;
     padding: 6px;
   }
 
@@ -318,14 +392,50 @@ function togglePin() {
     height: 27px;
   }
 
-  .today-button,
-  .toolbar-actions :deep(.n-button:not(.new-event-button):first-of-type) {
-    display: none;
+  .toolbar-actions {
+    justify-self: end;
   }
 
-  .month-label {
-    min-width: 104px;
+  .calendar-nav {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
+    justify-self: stretch;
+  }
+}
+
+@media (max-width: 420px) {
+  .toolbar {
+    gap: 3px;
+  }
+
+  .toolbar-actions {
+    gap: 0;
+  }
+
+  .toolbar :deep(.n-button) {
+    min-width: 28px;
+  }
+
+  .view-switch {
+    margin-right: 3px;
+    padding: 1px;
+  }
+
+  .view-switch button {
+    padding: 3px 7px;
+    font-size: 12px;
+  }
+
+  .calendar-label {
+    min-width: 82px;
+    margin: 0 2px;
     font-size: 13px;
+  }
+
+  .today-button {
+    font-size: 12px;
   }
 }
 </style>

@@ -150,7 +150,7 @@ function errorMessage(error: unknown, fallback: string): string {
         <div class="modal-heading">
           <span class="eyebrow">Local agent workflow</span>
           <h2>AI Sync</h2>
-          <p>Read recent email through CATendar Core, then let your local agent plan the calendar.</p>
+          <p>Read recent email through catendar Core, then let your local agent plan the calendar.</p>
         </div>
       </template>
 
@@ -163,7 +163,7 @@ function errorMessage(error: unknown, fallback: string): string {
             <span class="step">01</span>
             <div>
               <h3>Email source</h3>
-              <p>Standard IMAP. Message bodies stay out of CATendar's database.</p>
+              <p>Standard IMAP. Message bodies stay out of catendar's database.</p>
             </div>
           </div>
 
@@ -220,7 +220,7 @@ function errorMessage(error: unknown, fallback: string): string {
             <span class="step">02</span>
             <div>
               <h3>Local agent</h3>
-              <p>CATendar invokes the selected CLI automatically when you click AI Sync.</p>
+              <p>catendar invokes the selected CLI automatically when you click AI Sync.</p>
             </div>
           </div>
 
@@ -245,7 +245,7 @@ function errorMessage(error: unknown, fallback: string): string {
         </section>
 
         <div class="privacy-note">
-          Email credentials remain in CATendar Core. Email text selected for planning is sent to the chosen agent's model service.
+          Email credentials remain in catendar Core. Email text selected for planning is sent to the chosen agent's model service.
         </div>
 
         <footer class="form-actions">

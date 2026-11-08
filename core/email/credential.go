@@ -7,7 +7,10 @@ import (
 	keyring "github.com/zalando/go-keyring"
 )
 
-const keyringService = "CATendar"
+const (
+	keyringService       = "catendar"
+	legacyKeyringService = "CATendar"
+)
 
 type CredentialStore interface {
 	Set(accountID, secret string) error
@@ -29,25 +32,34 @@ func (KeyringCredentials) Set(accountID, secret string) error {
 }
 
 func (KeyringCredentials) Get(accountID string) (string, error) {
-	secret, err := keyring.Get(keyringService, credentialKey(accountID))
+	secret, err := lookupCredential(accountID)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return "", errors.New("email credential is not configured")
+	}
 	if err != nil {
-		if errors.Is(err, keyring.ErrNotFound) {
-			return "", errors.New("email credential is not configured")
-		}
 		return "", fmt.Errorf("read email credential from system keychain: %w", err)
 	}
 	return secret, nil
 }
 
 func (KeyringCredentials) Exists(accountID string) (bool, error) {
-	_, err := keyring.Get(keyringService, credentialKey(accountID))
-	if err == nil {
-		return true, nil
-	}
+	_, err := lookupCredential(accountID)
 	if errors.Is(err, keyring.ErrNotFound) {
 		return false, nil
 	}
-	return false, fmt.Errorf("inspect email credential in system keychain: %w", err)
+	if err != nil {
+		return false, fmt.Errorf("inspect email credential in system keychain: %w", err)
+	}
+	return true, nil
+}
+
+func lookupCredential(accountID string) (string, error) {
+	key := credentialKey(accountID)
+	secret, err := keyring.Get(keyringService, key)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return keyring.Get(legacyKeyringService, key)
+	}
+	return secret, err
 }
 
 func credentialKey(accountID string) string {
