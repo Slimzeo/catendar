@@ -29,7 +29,7 @@ func TestLocalSessionCarriesCLIRequestToCore(t *testing.T) {
 	go func() {
 		serverDone <- session.Serve(ctx, func(_ context.Context, request synccli.Request) (any, error) {
 			if request.Command != "email.list" {
-				t.Fatalf("unexpected command: %s", request.Command)
+				return nil, errors.New("unexpected command: " + request.Command)
 			}
 			return map[string]int{"total": 3}, nil
 		})

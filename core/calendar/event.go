@@ -31,6 +31,7 @@ type Event struct {
 	Color       string    `json:"color"`
 	AllDay      bool      `json:"allDay"`
 	Description string    `json:"description"`
+	Result      string    `json:"result,omitempty"`
 	Bold        bool      `json:"bold"`
 	Phase       string    `json:"phase"`
 	Deadline    string    `json:"deadline,omitempty"`
@@ -45,6 +46,7 @@ type EventInput struct {
 	Color       string  `json:"color"`
 	AllDay      bool    `json:"allDay"`
 	Description string  `json:"description"`
+	Result      *string `json:"result,omitempty"`
 	Bold        bool    `json:"bold"`
 	Phase       string  `json:"phase,omitempty"`
 	Deadline    *string `json:"deadline,omitempty"`
@@ -86,7 +88,7 @@ func NewService(db *sql.DB) *Service {
 
 func (s *Service) GetEventsByDateRange(ctx context.Context, start, end string) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, title, start, end, color, all_day, description, bold, phase, deadline, created_at, updated_at
+		SELECT id, title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
 		FROM events
 		WHERE start >= ? AND start < date(?, '+1 day')
 		ORDER BY start ASC
@@ -118,11 +120,11 @@ func (s *Service) CreateEvent(ctx context.Context, input EventInput) (*Event, er
 	now := time.Now()
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO events (
-			title, start, end, color, all_day, description, bold, phase, deadline, created_at, updated_at
+			title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?, COALESCE(?, ''), ?, ?)
 	`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
-		boolToInt(input.Bold), input.Phase, input.Deadline, now, now)
+		trimResult(input.Result), boolToInt(input.Bold), input.Phase, input.Deadline, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("create event: %w", err)
 	}
@@ -153,12 +155,12 @@ func (s *Service) UpdateEvent(ctx context.Context, id int64, input EventInput) (
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE events
-		SET title = ?, start = ?, end = ?, color = ?, all_day = ?, description = ?, bold = ?,
-			phase = COALESCE(NULLIF(?, ''), phase), deadline = COALESCE(?, deadline),
+		SET title = ?, start = ?, end = ?, color = ?, all_day = ?, description = ?, result = COALESCE(?, result),
+			bold = ?, phase = COALESCE(NULLIF(?, ''), phase), deadline = COALESCE(?, deadline),
 			updated_at = ?
 		WHERE id = ?
 	`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
-		boolToInt(input.Bold), phase, deadline, time.Now(), id)
+		trimResult(input.Result), boolToInt(input.Bold), phase, deadline, time.Now(), id)
 	if err != nil {
 		return nil, fmt.Errorf("update event: %w", err)
 	}
@@ -270,7 +272,7 @@ func (s *Service) BatchCreateFromEmail(
 
 func (s *Service) getEventByID(ctx context.Context, id int64) (*Event, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, title, start, end, color, all_day, description, bold, phase, deadline, created_at, updated_at
+		SELECT id, title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
 		FROM events WHERE id = ?
 	`, id)
 	event, err := scanEvent(row)
@@ -287,10 +289,10 @@ type rowScanner interface {
 func scanEvent(row rowScanner) (Event, error) {
 	var event Event
 	var allDay, bold int
-	var end, description, deadline sql.NullString
+	var end, description, result, deadline sql.NullString
 	if err := row.Scan(
 		&event.ID, &event.Title, &event.Start, &end, &event.Color,
-		&allDay, &description, &bold, &event.Phase, &deadline, &event.CreatedAt, &event.UpdatedAt,
+		&allDay, &description, &result, &bold, &event.Phase, &deadline, &event.CreatedAt, &event.UpdatedAt,
 	); err != nil {
 		return Event{}, fmt.Errorf("scan event: %w", err)
 	}
@@ -301,6 +303,9 @@ func scanEvent(row rowScanner) (Event, error) {
 	}
 	if description.Valid {
 		event.Description = description.String
+	}
+	if result.Valid {
+		event.Result = result.String
 	}
 	if deadline.Valid {
 		event.Deadline = deadline.String
@@ -337,6 +342,14 @@ func normalizeCreateInput(input EventInput) (EventInput, error) {
 		input.Color = defaultEventColor
 	}
 	return input, nil
+}
+
+func trimResult(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
 }
 
 func normalizePhase(value string) (string, error) {

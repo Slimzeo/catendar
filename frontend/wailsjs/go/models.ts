@@ -145,6 +145,7 @@ export namespace calendar {
 	    color: string;
 	    allDay: boolean;
 	    description: string;
+	    result?: string;
 	    bold: boolean;
 	    phase: string;
 	    deadline?: string;
@@ -166,6 +167,7 @@ export namespace calendar {
 	        this.color = source["color"];
 	        this.allDay = source["allDay"];
 	        this.description = source["description"];
+	        this.result = source["result"];
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
@@ -198,6 +200,7 @@ export namespace calendar {
 	    color: string;
 	    allDay: boolean;
 	    description: string;
+	    result?: string;
 	    bold: boolean;
 	    phase?: string;
 	    deadline?: string;
@@ -214,6 +217,7 @@ export namespace calendar {
 	        this.color = source["color"];
 	        this.allDay = source["allDay"];
 	        this.description = source["description"];
+	        this.result = source["result"];
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
