@@ -1,21 +1,24 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { format } from 'date-fns'
 import { NButton, useMessage } from 'naive-ui'
 import MonthlyCalendar from './components/calendar/MonthlyCalendar.vue'
 import AppToolbar from './components/common/AppToolbar.vue'
 import DailyBoard from './components/board/DailyBoard.vue'
 import DayEventsDrawer from './components/event/DayEventsDrawer.vue'
+import DeleteEventDialog from './components/event/DeleteEventDialog.vue'
+import { isPlainEscape, type ShortcutAction } from './shortcuts'
+import { useShortcutKeys } from './composables/useShortcutKeys'
 import { useCalendarStore } from './stores/calendar'
 import { useEventsStore } from './stores/events'
 import { aiSyncApi } from './services/api'
 import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput, EventPhase } from './types'
 
 const loadEventModal = () => import('./components/event/EventModal.vue')
-const loadAISyncModal = () => import('./components/ai-sync/AISyncModal.vue')
+const loadSettingsModal = () => import('./components/settings/SettingsModal.vue')
 const loadEmailSourceModal = () => import('./components/ai-sync/EmailSourceModal.vue')
 const EventModal = defineAsyncComponent(loadEventModal)
-const AISyncModal = defineAsyncComponent(loadAISyncModal)
+const SettingsModal = defineAsyncComponent(loadSettingsModal)
 const EmailSourceModal = defineAsyncComponent(loadEmailSourceModal)
 
 const calendarStore = useCalendarStore()
@@ -29,10 +32,14 @@ const defaultTitle = ref('')
 const defaultPhase = ref<EventPhase>('todo')
 const modalVariant = ref<'board' | 'calendar'>('calendar')
 const savingEvent = ref(false)
-const focusResultOnOpen = ref(false)
+const initialField = ref<'title' | 'description' | 'result'>('title')
+const board = ref<InstanceType<typeof DailyBoard> | null>(null)
 const boardQuickActive = ref(false)
+const pendingDelete = ref<CalendarEvent | null>(null)
 
-const showAISyncModal = ref(false)
+const showSettings = ref(false)
+const settingsModal = ref<InstanceType<typeof SettingsModal> | null>(null)
+const settingsTab = ref<'shortcuts' | 'ai-sync'>('shortcuts')
 const showAISyncStatus = ref(false)
 const aiSyncStatus = ref<AISyncStatus>({
   state: 'idle',
@@ -79,6 +86,11 @@ function openBoardFromDrawer(date: string) {
   calendarStore.setView('board')
 }
 
+function openSettings(tab: 'shortcuts' | 'ai-sync') {
+  settingsTab.value = tab
+  showSettings.value = true
+}
+
 function defaultCreateDate() {
   return calendarStore.viewMode === 'board'
     ? calendarStore.focusedDate
@@ -91,7 +103,7 @@ function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo',
   defaultDate.value = date
   defaultTitle.value = title
   defaultPhase.value = phase
-  focusResultOnOpen.value = false
+  initialField.value = 'title'
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
 }
@@ -100,12 +112,12 @@ function openCreateDetails(phase: EventPhase, title: string) {
   openCreateModal(calendarStore.focusedDate, phase, title)
 }
 
-function openEditModal(event: CalendarEvent, focusResult = false) {
+function openEditModal(event: CalendarEvent, focus: 'title' | 'description' | 'result' = 'title') {
   showDayDrawer.value = false
   editingEvent.value = event
   defaultDate.value = ''
   defaultTitle.value = ''
-  focusResultOnOpen.value = focusResult
+  initialField.value = focus
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
 }
@@ -130,13 +142,23 @@ async function handleSave(input: EventInput) {
   }
 }
 
-async function handleDelete(id: number) {
-  if (savingEvent.value) return
+function requestDelete(item: CalendarEvent) {
+  if (!savingEvent.value && !pendingDelete.value) pendingDelete.value = item
+}
+
+function cancelDelete() {
+  if (!savingEvent.value) pendingDelete.value = null
+}
+
+async function confirmDelete() {
+  if (savingEvent.value || !pendingDelete.value) return
+  const id = pendingDelete.value.id
   savingEvent.value = true
-  const task = modalVariant.value === 'board'
+  const task = calendarStore.viewMode === 'board'
   try {
     await eventsStore.deleteEvent(id)
     message.success(task ? 'Task deleted' : 'Event deleted')
+    pendingDelete.value = null
     showEventModal.value = false
   } catch {
     message.error(eventsStore.error || (task ? 'Could not delete the task' : 'Could not delete the event'))
@@ -156,7 +178,7 @@ async function startAISync() {
     message.error(detail)
     showAISyncStatus.value = false
     if (/not configured|not available|not installed/i.test(detail)) {
-      showAISyncModal.value = true
+      openSettings('ai-sync')
     }
   }
 }
@@ -224,58 +246,89 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
-function handleKeyboardShortcut(event: KeyboardEvent) {
-  if (event.defaultPrevented) return
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
-  const target = event.target as HTMLElement | null
-  if (target?.closest('input, textarea, select, button, a, [contenteditable="true"]')) return
-  if (
-    showEventModal.value ||
-    showDayDrawer.value ||
-    showAISyncModal.value ||
-    showEmailSource.value ||
-    boardQuickActive.value
-  ) return
+const editingOrDeleting = computed(() => showEventModal.value || !!pendingDelete.value)
+const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value)
+const repeatable = new Set<ShortcutAction>(['taskUp', 'taskDown', 'columnLeft', 'columnRight', 'previousDate', 'nextDate'])
 
-  const key = event.key.toLowerCase()
-  if (calendarStore.viewMode === 'board') {
-    if (event.key === 'ArrowLeft') {
-      calendarStore.prevDay()
-    } else if (event.key === 'ArrowRight') {
-      calendarStore.nextDay()
-    } else if (key === 'n') {
-      openCreateModal(calendarStore.focusedDate)
-    } else if (key === 't') {
-      calendarStore.goToToday()
-    } else {
-      return
-    }
-  } else if (event.key === 'ArrowLeft') {
-    calendarStore.prevMonth()
-  } else if (event.key === 'ArrowRight') {
-    calendarStore.nextMonth()
-  } else if (key === 't') {
-    calendarStore.goToToday()
-  } else if (key === 'n') {
-    openCreateModal()
-  } else {
-    return
+function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin: EventTarget | null): boolean {
+  if (otherDialogOpen.value) {
+    if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
+    if (showSettings.value) return settingsModal.value?.dismiss() ?? false
+    if (showEmailSource.value) showEmailSource.value = false
+    else showDayDrawer.value = false
+    return true
   }
-  event.preventDefault()
+  if (pendingDelete.value) {
+    if (action === 'dismiss') cancelDelete()
+    else if (action === 'confirmDelete') {
+      if (!event.repeat) void confirmDelete()
+    } else return false
+    return true
+  }
+  if (showEventModal.value) {
+    // Let the editor's focus trap handle native Escape, including open pickers.
+    if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
+    if (!savingEvent.value) showEventModal.value = false
+    return true
+  }
+  if (boardQuickActive.value) {
+    if (action !== 'dismiss') return false
+    board.value?.cancelQuickAdd()
+    return true
+  }
+
+  const target = tabOrigin ?? event.target
+  if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"]')) {
+    // The phase select keeps native typing and arrow keys. Explicit chords
+    // still belong to the board, even when ordinary Tab just focused the select.
+    const boardChord = tabOrigin || event.ctrlKey || event.altKey || event.metaKey
+    if (!target.closest('.board .phase-control') || !boardChord) return false
+  }
+  if (event.repeat && !repeatable.has(action)) return true
+  switch (action) {
+    case 'previousDate':
+      calendarStore.prevPeriod()
+      break
+    case 'nextDate':
+      calendarStore.nextPeriod()
+      break
+    case 'today':
+      calendarStore.goToToday()
+      break
+    case 'newEvent':
+      openCreateModal()
+      break
+    case 'confirmDelete':
+      return !!board.value
+    default:
+      return board.value?.runShortcut(action) ?? false
+  }
+  return true
 }
+
+useShortcutKeys(handleShortcut, target => {
+  if (!editingOrDeleting.value && !otherDialogOpen.value && !boardQuickActive.value) {
+    board.value?.syncSelectionFromFocus(target)
+  }
+})
+
+watch(editingOrDeleting, async open => {
+  if (open) return
+  await nextTick()
+  if (!otherDialogOpen.value && !boardQuickActive.value) board.value?.focusSelection()
+}, { flush: 'post' })
 
 watch(() => calendarStore.currentMonth, () => {
   eventsStore.fetchEvents()
 })
 
 onMounted(() => {
-  window.addEventListener('keydown', handleKeyboardShortcut)
   eventsStore.fetchEvents()
   requestAnimationFrame(() => {
     void loadEventModal()
   })
   modalPreloadTimer = setTimeout(() => {
-    void loadAISyncModal()
+    void loadSettingsModal()
     void loadEmailSourceModal()
   }, 300)
   void aiSyncApi.status().then(status => {
@@ -288,7 +341,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeyboardShortcut)
   stopAISyncPolling()
   if (modalPreloadTimer) clearTimeout(modalPreloadTimer)
 })
@@ -300,7 +352,7 @@ onUnmounted(() => {
       :syncing="isAISyncing"
       @create="openCreateModal()"
       @ai-sync="startAISync"
-      @ai-settings="showAISyncModal = true"
+      @settings="openSettings('shortcuts')"
     />
 
     <transition name="sync-status">
@@ -321,7 +373,7 @@ onUnmounted(() => {
           <span v-else-if="aiSyncStatus.state === 'succeeded'">{{ aiSyncCounts }}</span>
         </div>
         <n-button v-if="isAISyncing" text size="small" @click="cancelAISync">Cancel</n-button>
-        <n-button v-else-if="aiSyncStatus.state === 'failed'" text size="small" @click="showAISyncModal = true">
+        <n-button v-else-if="aiSyncStatus.state === 'failed'" text size="small" @click="openSettings('ai-sync')">
           Settings
         </n-button>
         <n-button v-if="!isAISyncing" text size="small" aria-label="Dismiss" @click="showAISyncStatus = false">×</n-button>
@@ -340,7 +392,9 @@ onUnmounted(() => {
 
       <daily-board
         v-if="calendarStore.viewMode === 'board'"
+        ref="board"
         @edit="openEditModal"
+        @request-delete="requestDelete"
         @create-details="openCreateDetails"
         @open-email="openSourceEmail"
         @quick-state="boardQuickActive = $event"
@@ -373,15 +427,27 @@ onUnmounted(() => {
       :default-title="defaultTitle"
       :default-color="eventsStore.nextCreateColor"
       :default-phase="defaultPhase"
-      :focus-result="focusResultOnOpen"
+      :initial-focus="initialField"
       :variant="modalVariant"
       :saving="savingEvent"
       @save="handleSave"
-      @delete="handleDelete"
+      @request-delete="requestDelete"
     />
 
-    <AISyncModal
-      v-model:show="showAISyncModal"
+    <delete-event-dialog
+      v-if="pendingDelete"
+      :title="pendingDelete.title"
+      :kind="calendarStore.viewMode === 'board' ? 'task' : 'event'"
+      :busy="savingEvent"
+      @cancel="cancelDelete"
+      @confirm="confirmDelete"
+    />
+
+    <SettingsModal
+      ref="settingsModal"
+      v-model:show="showSettings"
+      :initial-tab="settingsTab"
+      :syncing="isAISyncing"
       @saved="showAISyncStatus = false"
     />
 

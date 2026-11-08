@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
-import { NButton, NCard, NDatePicker, NInput, NModal, NPopconfirm, NSelect, NSwitch } from 'naive-ui'
+import { NButton, NCard, NDatePicker, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases } from '@/constants/eventPhases'
 import ColorPalettePicker from './ColorPalettePicker.vue'
@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<{
   defaultTitle?: string
   defaultColor: string
   defaultPhase?: EventPhase
-  focusResult?: boolean
+  initialFocus?: 'title' | 'description' | 'result'
   variant?: 'board' | 'calendar'
   saving?: boolean
 }>(), {
@@ -21,7 +21,7 @@ const props = withDefaults(defineProps<{
   defaultDate: '',
   defaultTitle: '',
   defaultPhase: 'todo',
-  focusResult: false,
+  initialFocus: 'title',
   variant: 'calendar',
   saving: false
 })
@@ -29,10 +29,11 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'update:show', value: boolean): void
   (event: 'save', input: EventInput): void
-  (event: 'delete', id: number): void
+  (event: 'request-delete', item: CalendarEvent): void
 }>()
 
 const titleInputRef = ref<{ focus: () => void } | null>(null)
+const descriptionInputRef = ref<{ focus: () => void } | null>(null)
 const resultInputRef = ref<{ focus: () => void } | null>(null)
 const title = ref('')
 const description = ref('')
@@ -64,9 +65,6 @@ const submitLabel = computed(() => {
   if (isTask.value) return isEditing.value ? 'Save task' : 'Create task'
   return isEditing.value ? 'Save changes' : 'Create event'
 })
-const deletePrompt = computed(
-  () => `Delete this ${isTask.value ? 'task' : 'event'}? This cannot be undone.`
-)
 
 watch(startDate, (value, previousValue) => {
   if (initializing || !value) return
@@ -82,11 +80,13 @@ watch(
     if (!show) return
     initializeForm()
     nextTick(() => {
-      if (props.focusResult && phase.value === 'progressing') {
+      if (props.initialFocus === 'description') {
+        descriptionInputRef.value?.focus()
+      } else if (props.initialFocus === 'result' && phase.value === 'progressing') {
         resultInputRef.value?.focus()
-        return
+      } else {
+        titleInputRef.value?.focus()
       }
-      titleInputRef.value?.focus()
     })
   },
   { immediate: true }
@@ -197,13 +197,10 @@ function handleSave() {
   emit('save', input)
 }
 
-function handleDelete() {
-  if (props.event?.id) emit('delete', props.event.id)
-}
 </script>
 
 <template>
-  <n-modal :show="show" :mask-closable="!saving" @update:show="value => emit('update:show', value)">
+  <n-modal :show="show" :mask-closable="!saving" :close-on-esc="!saving" @update:show="value => emit('update:show', value)">
     <n-card
       class="event-card"
       :class="{ 'task-panel': isTask }"
@@ -252,6 +249,7 @@ function handleDelete() {
             <span class="optional">{{ isTask ? 'Optional' : 'Links are clickable' }}</span>
           </label>
           <n-input
+            ref="descriptionInputRef"
             v-model:value="description"
             type="textarea"
             :input-props="{ id: 'event-description' }"
@@ -380,12 +378,7 @@ function handleDelete() {
         <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
 
         <footer class="form-actions">
-          <n-popconfirm v-if="isEditing" @positive-click="handleDelete">
-            <template #trigger>
-              <n-button type="error" ghost :disabled="saving">Delete</n-button>
-            </template>
-            {{ deletePrompt }}
-          </n-popconfirm>
+          <n-button v-if="event" type="error" ghost :disabled="saving" @click="emit('request-delete', event)">Delete</n-button>
           <span v-else />
 
           <div class="primary-actions">
