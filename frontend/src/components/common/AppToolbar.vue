@@ -13,7 +13,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'create'): void
   (event: 'ai-sync'): void
-  (event: 'ai-settings'): void
+  (event: 'settings'): void
 }>()
 
 const calendarStore = useCalendarStore()
@@ -192,9 +192,9 @@ function togglePin() {
             quaternary
             circle
             size="small"
-            :disabled="syncing"
-            aria-label="AI Sync settings"
-            @click="emit('ai-settings')"
+            aria-label="Settings"
+            aria-haspopup="dialog"
+            @click="emit('settings')"
           >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <circle cx="10" cy="10" r="2.4" />
@@ -202,7 +202,7 @@ function togglePin() {
             </svg>
           </n-button>
         </template>
-        {{ syncing ? 'Cancel AI Sync before changing settings' : 'AI Sync settings' }}
+        Settings
       </n-tooltip>
     </div>
   </header>

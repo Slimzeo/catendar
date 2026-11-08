@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
 import { useMessage } from 'naive-ui'
+import type { ShortcutAction } from '@/shortcuts'
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases, isEventPhase } from '@/constants/eventPhases'
 import { useCalendarStore } from '@/stores/calendar'
@@ -11,7 +12,8 @@ import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
 
 const emit = defineEmits<{
-  (event: 'edit', calendarEvent: CalendarEvent, focusResult?: boolean): void
+  (event: 'edit', calendarEvent: CalendarEvent, focus?: 'title' | 'description' | 'result'): void
+  (event: 'request-delete', calendarEvent: CalendarEvent): void
   (event: 'create-details', phase: EventPhase, title: string): void
   (event: 'open-email', sourceURL: string): void
   (event: 'quick-state', active: boolean): void
@@ -29,6 +31,22 @@ const columns = computed(() => eventPhases.map(phase => ({
   phase,
   events: dayEvents.value.filter(event => event.phase === phase)
 })))
+
+const boardRef = ref<HTMLElement | null>(null)
+const activePhase = ref<EventPhase>('todo')
+const selectedId = ref<number | null>(null)
+const selectedEvent = computed(() => {
+  const id = selectedId.value
+  if (id == null) return null
+  return dayEvents.value.find(event => event.id === id) ?? null
+})
+const lastColumnIds: Record<EventPhase, number[]> = {
+  todo: [],
+  progressing: [],
+  done: []
+}
+const phaseMoveId = ref<number | null>(null)
+let phaseMoveToken = 0
 
 const quickPhase = ref<EventPhase | null>(null)
 const quickTitle = ref('')
@@ -53,18 +71,36 @@ watch(quickPhase, async phase => {
   emit('quick-state', Boolean(phase))
   if (phase) {
     await nextTick()
-    quickInput.value?.focus()
+    if (quickPhase.value === phase) quickInput.value?.focus()
   }
 })
 
 watch(selectedDate, () => {
+  activePhase.value = 'todo'
+  selectedId.value = null
+  for (const phase of eventPhases) lastColumnIds[phase] = []
+  phaseMoveToken += 1
+  phaseMoveId.value = null
   if (quickPhase.value) closeQuick()
 })
 
-onBeforeUnmount(() => emit('quick-state', false))
+watch(
+  [dayEvents, () => eventsStore.loading],
+  () => reconcileSelection(),
+  { flush: 'post', immediate: true }
+)
+
+onBeforeUnmount(() => {
+  emit('quick-state', false)
+  phaseMoveToken += 1
+})
 
 function openQuick(phase: EventPhase) {
   if (quickSaving.value) return
+  if (phase !== activePhase.value) {
+    activePhase.value = phase
+    selectedId.value = firstEventId(phase)
+  }
   if (quickPhase.value === phase) {
     quickInput.value?.focus()
     return
@@ -79,13 +115,6 @@ function closeQuick() {
   quickPhase.value = null
   quickTitle.value = ''
   quickError.value = ''
-}
-
-function handleQuickEscape() {
-  if (quickSaving.value) return
-  const phase = quickPhase.value
-  closeQuick()
-  if (phase) nextTick(() => addButtons.get(phase)?.focus())
 }
 
 function openQuickDetails() {
@@ -106,12 +135,13 @@ async function submitQuick() {
     return
   }
 
+  const createDate = selectedDate.value
   quickSaving.value = true
   try {
     const input: EventInput = {
       title,
-      start: `${selectedDate.value}T00:00:00`,
-      end: `${selectedDate.value}T00:00:00`,
+      start: `${createDate}T00:00:00`,
+      end: `${createDate}T00:00:00`,
       color: eventsStore.nextCreateColor,
       allDay: true,
       description: '',
@@ -119,7 +149,11 @@ async function submitQuick() {
       phase,
       deadline: ''
     }
-    await eventsStore.createEvent(input)
+    const created = await eventsStore.createEvent(input)
+    if (selectedDate.value === createDate) {
+      activePhase.value = created.phase
+      selectedId.value = created.id
+    }
     quickTitle.value = ''
     quickError.value = ''
   } catch (error) {
@@ -174,7 +208,9 @@ function dropOn(phase: EventPhase) {
   draggingId.value = null
   if (!id) return
   const calendarEvent = dayEvents.value.find(item => item.id === id)
-  if (!calendarEvent || calendarEvent.phase === phase) return
+  if (!calendarEvent) return
+  selectEvent(calendarEvent)
+  if (calendarEvent.phase === phase) return
   void moveEvent(calendarEvent, phase)
 }
 
@@ -185,6 +221,7 @@ function changePhase(calendarEvent: CalendarEvent, event: Event) {
     select.value = calendarEvent.phase
     return
   }
+  selectEvent(calendarEvent)
   if (phase === calendarEvent.phase) return
   void moveEvent(calendarEvent, phase)
 }
@@ -199,11 +236,13 @@ async function moveEvent(calendarEvent: CalendarEvent, phase: EventPhase) {
 }
 
 function openEvent(calendarEvent: CalendarEvent) {
+  selectEvent(calendarEvent)
   emit('edit', calendarEvent)
 }
 
 function openResultEditor(calendarEvent: CalendarEvent) {
-  emit('edit', calendarEvent, true)
+  selectEvent(calendarEvent)
+  emit('edit', calendarEvent, 'result')
 }
 
 function eventTime(event: CalendarEvent): string {
@@ -251,15 +290,269 @@ function openMail(event: CalendarEvent) {
 function hasMeta(event: CalendarEvent): boolean {
   return Boolean((themeStore.showTime && eventTime(event)) || event.deadline || mailUrl(event))
 }
+
+function eventsForPhase(phase: EventPhase): CalendarEvent[] {
+  return columns.value.find(column => column.phase === phase)?.events ?? []
+}
+
+function firstEventId(phase: EventPhase): number | null {
+  const events = eventsForPhase(phase)
+  return events.length ? events[0].id : null
+}
+
+function captureColumnIds(): Record<EventPhase, number[]> {
+  const ids: Record<EventPhase, number[]> = { todo: [], progressing: [], done: [] }
+  for (const column of columns.value) ids[column.phase] = column.events.map(event => event.id)
+  return ids
+}
+
+function reconcileSelection() {
+  const ids = captureColumnIds()
+  const id = selectedId.value
+
+  if (id != null) {
+    const calendarEvent = dayEvents.value.find(event => event.id === id)
+    if (calendarEvent) {
+      if (calendarEvent.phase !== activePhase.value) activePhase.value = calendarEvent.phase
+    } else if (!eventsStore.loading) {
+      const previousIds = lastColumnIds[activePhase.value]
+      const previousIndex = previousIds.indexOf(id)
+      const candidates = ids[activePhase.value]
+      selectedId.value = candidates.length
+        ? candidates[previousIndex >= 0 ? Math.min(previousIndex, candidates.length - 1) : 0]
+        : null
+    } else {
+      return
+    }
+  } else {
+    const candidates = ids[activePhase.value]
+    if (candidates.length) selectedId.value = candidates[0]
+  }
+
+  for (const phase of eventPhases) lastColumnIds[phase] = ids[phase]
+}
+
+function selectEvent(calendarEvent: CalendarEvent) {
+  activePhase.value = calendarEvent.phase
+  selectedId.value = calendarEvent.id
+}
+
+async function focusSelection() {
+  reconcileSelection()
+  await nextTick()
+
+  const id = selectedId.value
+  if (id != null) {
+    const title = boardRef.value?.querySelector<HTMLButtonElement>(
+      `article[data-task-id="${id}"] .edit-title`
+    )
+    if (title) {
+      title.focus({ preventScroll: true })
+      title.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+      return
+    }
+  }
+
+  const addButton = addButtons.get(activePhase.value)
+  if (addButton) {
+    addButton.focus({ preventScroll: true })
+    addButton.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }
+}
+
+function syncSelectionFromFocus(target: EventTarget | null) {
+  if (!(target instanceof Element) || !boardRef.value?.contains(target)) return
+  const column = target.closest<HTMLElement>('[data-phase]')
+  if (!column) return
+  const phase = column.dataset.phase
+  if (!isEventPhase(phase)) return
+
+  const card = target.closest<HTMLElement>('[data-task-id]')
+  if (card) {
+    const calendarEvent = dayEvents.value.find(item => item.id === Number(card.dataset.taskId))
+    if (!calendarEvent) return
+    selectEvent(calendarEvent)
+    return
+  }
+
+  if (phase !== activePhase.value) {
+    activePhase.value = phase
+    selectedId.value = firstEventId(phase)
+  }
+}
+
+function cancelQuickAdd() {
+  if (quickSaving.value || !quickPhase.value) return
+  closeQuick()
+  void focusSelection()
+}
+
+function moveColumn(direction: -1 | 1) {
+  const nextIndex = eventPhases.indexOf(activePhase.value) + direction
+  if (nextIndex >= 0 && nextIndex < eventPhases.length) {
+    activePhase.value = eventPhases[nextIndex]
+    selectedId.value = firstEventId(activePhase.value)
+  }
+  void focusSelection()
+}
+
+function moveTask(direction: -1 | 1) {
+  const events = eventsForPhase(activePhase.value)
+  if (!events.length) return
+  const index = events.findIndex(event => event.id === selectedId.value)
+  if (index === -1) {
+    selectedId.value = events[0].id
+    void focusSelection()
+    return
+  }
+  const nextIndex = index + direction
+  if (nextIndex < 0 || nextIndex >= events.length) return
+  selectedId.value = events[nextIndex].id
+  void focusSelection()
+}
+
+function selectTaskPosition(position: number) {
+  const target = eventsForPhase(activePhase.value)[position - 1]
+  if (!target) return
+  selectedId.value = target.id
+  void focusSelection()
+}
+
+function quickAddFromShortcut() {
+  if (quickSaving.value) return
+  if (quickPhase.value === activePhase.value) {
+    quickInput.value?.focus()
+    return
+  }
+  openQuick(activePhase.value)
+}
+
+function requestDeleteSelected() {
+  const calendarEvent = selectedEvent.value
+  if (!calendarEvent) return
+  emit('request-delete', calendarEvent)
+}
+
+function editSelectedDescription() {
+  const calendarEvent = selectedEvent.value
+  if (!calendarEvent) return
+  emit('edit', calendarEvent, 'description')
+}
+
+function focusStillOnTask(id: number): boolean {
+  if (selectedId.value !== id) return false
+  const active = document.activeElement
+  if (!active || active === document.body) return true
+  if (!(active instanceof HTMLElement)) return false
+  const card = active.closest<HTMLElement>('[data-task-id]')
+  return card?.dataset.taskId === String(id)
+}
+
+async function moveSelectedPhase(direction: -1 | 1) {
+  if (phaseMoveId.value != null) return
+  const calendarEvent = selectedEvent.value
+  if (!calendarEvent || eventsStore.isMoving(calendarEvent.id)) return
+
+  const currentIndex = eventPhases.indexOf(calendarEvent.phase)
+  const nextIndex = currentIndex + direction
+  if (currentIndex < 0 || nextIndex < 0 || nextIndex >= eventPhases.length) return
+
+  const previousPhase = calendarEvent.phase
+  const phase = eventPhases[nextIndex]
+  const moveId = calendarEvent.id
+  const moveDate = selectedDate.value
+  const token = ++phaseMoveToken
+
+  phaseMoveId.value = moveId
+  activePhase.value = phase
+  selectedId.value = moveId
+  const move = eventsStore.setEventPhase(moveId, phase)
+  void focusSelection()
+
+  try {
+    const updated = await move
+    if (token !== phaseMoveToken || selectedDate.value !== moveDate) return
+    if (selectedId.value === moveId) {
+      if (updated) activePhase.value = updated.phase
+      else {
+        activePhase.value = previousPhase
+        reconcileSelection()
+      }
+    }
+    await nextTick()
+    if (focusStillOnTask(moveId)) await focusSelection()
+  } catch (error) {
+    if (token !== phaseMoveToken || selectedDate.value !== moveDate) return
+    if (selectedId.value === moveId) activePhase.value = previousPhase
+    const detail = error instanceof Error ? error.message : 'Could not move the task'
+    message.error(detail)
+    await nextTick()
+    if (focusStillOnTask(moveId)) await focusSelection()
+  } finally {
+    if (phaseMoveToken === token) phaseMoveId.value = null
+  }
+}
+
+function runShortcut(action: ShortcutAction): boolean {
+  switch (action) {
+    case 'columnLeft':
+      moveColumn(-1)
+      return true
+    case 'columnRight':
+      moveColumn(1)
+      return true
+    case 'taskUp':
+      moveTask(-1)
+      return true
+    case 'taskDown':
+      moveTask(1)
+      return true
+    case 'quickAdd':
+      quickAddFromShortcut()
+      return true
+    case 'deleteTask':
+      requestDeleteSelected()
+      return true
+    case 'editDescription':
+      editSelectedDescription()
+      return true
+    case 'phaseLeft':
+      void moveSelectedPhase(-1)
+      return true
+    case 'phaseRight':
+      void moveSelectedPhase(1)
+      return true
+    default: {
+      const match = /^task(10|[1-9])$/.exec(action)
+      if (!match) return false
+      selectTaskPosition(Number(match[1]))
+      return true
+    }
+  }
+}
+
+defineExpose({
+  runShortcut,
+  focusSelection,
+  syncSelectionFromFocus,
+  cancelQuickAdd
+})
 </script>
 
 <template>
-  <main class="board" :aria-label="`Tasks for ${calendarStore.dayLabel}`">
+  <main
+    ref="boardRef"
+    class="board"
+    :aria-label="`Tasks for ${calendarStore.dayLabel}`"
+    @pointerdown.capture="syncSelectionFromFocus($event.target)"
+  >
     <section
       v-for="column in columns"
       :key="column.phase"
       class="column"
       :class="{ dropping: dragTarget === column.phase, done: column.phase === 'done' }"
+      :data-phase="column.phase"
+      :data-active="activePhase === column.phase ? 'true' : 'false'"
       :aria-labelledby="`board-column-${column.phase}`"
       @dragenter.prevent
       @dragover.prevent="dragOver(column.phase, $event)"
@@ -294,6 +587,9 @@ function hasMeta(event: CalendarEvent): boolean {
             'no-meta': !hasMeta(calendarEvent)
           }"
           :style="{ '--event-color': calendarEvent.color }"
+          :data-task-id="calendarEvent.id"
+          :data-selected="selectedId === calendarEvent.id ? 'true' : 'false'"
+          :aria-current="selectedId === calendarEvent.id ? 'true' : undefined"
           :draggable="!eventsStore.isMoving(calendarEvent.id)"
           @click="openEvent(calendarEvent)"
           @dragstart="startDrag($event, calendarEvent)"
@@ -358,7 +654,6 @@ function hasMeta(event: CalendarEvent): boolean {
                 :value="calendarEvent.phase"
                 :disabled="eventsStore.isMoving(calendarEvent.id)"
                 @click.stop
-                @pointerdown.stop
                 @keydown.stop
                 @change="changePhase(calendarEvent, $event)"
               >
@@ -379,7 +674,6 @@ function hasMeta(event: CalendarEvent): boolean {
           v-if="quickPhase === column.phase"
           class="quick-add"
           @submit.prevent="submitQuick"
-          @keydown.esc.stop.prevent="handleQuickEscape"
         >
           <input
             :ref="setQuickInput"
@@ -450,6 +744,11 @@ function hasMeta(event: CalendarEvent): boolean {
   border-radius: 12px;
   background: var(--bg-secondary);
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.column[data-active='true'] {
+  border-color: color-mix(in srgb, var(--primary-color) 36%, var(--border-soft));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 8%, transparent);
 }
 
 .column.dropping {
@@ -561,6 +860,15 @@ function hasMeta(event: CalendarEvent): boolean {
   border-color: var(--border-strong);
 }
 
+.card[data-selected='true'] {
+  border-color: color-mix(in srgb, var(--primary-color) 52%, var(--border-soft));
+  box-shadow: 0 0 0 1px var(--focus-ring), var(--shadow-sm);
+}
+
+.card[data-selected='true']:hover {
+  border-color: var(--primary-color);
+}
+
 .edit-title {
   padding: 0;
   border: 0;
@@ -576,6 +884,10 @@ function hasMeta(event: CalendarEvent): boolean {
 .card:focus-within {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
+}
+
+.edit-title:focus-visible {
+  outline: none; /* The enclosing card carries the focus ring. */
 }
 
 .card.dragging {
