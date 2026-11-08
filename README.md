@@ -48,7 +48,7 @@ catendar 是一个打开即显示今日看板的桌面日历。任务保存在�
 | 新建任务或月历事件 | `N` |
 | 缩放日历 | `Ctrl`/`Cmd` + 滚轮 |
 
-看板用边框标出当前列和当前卡片。移动阶段后，选择会跟随该卡片。月历的日期格也支持键盘聚焦，点击日期可查看当天安排。
+看板用边框标出当前列和当前卡片。卡片右侧的阶段按钮可以展开三个选项。使用默认键位时，即使选项已展开，按 `↑` / `↓` 也会收起选项并在同一列选卡。点击目标阶段、拖放卡片或按 `Ctrl+←` / `Ctrl+→` 均可移动卡片，选择会跟随该卡片。月历的日期格也支持键盘聚焦，点击日期可查看当天安排。
 
 macOS 也用 `Ctrl+←` / `Ctrl+→` 切换桌面空间。如果按键触发了系统动作，可在上述设置中为 **Previous phase** 和 **Next phase** 换一组键。[Apple 的空间切换说明](https://support.apple.com/zh-sg/guide/mac-help/mh14112/mac)
 
@@ -123,8 +123,15 @@ Wails 会先执行前端类型检查与 Vite 构建，再将 `frontend/dist` 嵌
 单独验证两端时：
 
 ```bash
-cd frontend && npm run build
+cd frontend && npm test && npm run build
 cd .. && go build ./...
+```
+
+卡片焦点和方向键的浏览器回归测试可在 `frontend` 下运行。
+
+```bash
+npx playwright-core install chromium webkit
+npm run test:browser
 ```
 
 ## 本地数据与凭据

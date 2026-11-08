@@ -250,6 +250,18 @@ const editingOrDeleting = computed(() => showEventModal.value || !!pendingDelete
 const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value)
 const repeatable = new Set<ShortcutAction>(['taskUp', 'taskDown', 'columnLeft', 'columnRight', 'previousDate', 'nextDate'])
 
+function wrapBoardTab(event: KeyboardEvent) {
+  if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || !(event.target instanceof HTMLElement)) return
+  const controls = event.target.closest('.board')?.querySelectorAll('button:enabled, input:enabled, a[href]')
+  if (!controls || controls[controls.length - 1] !== event.target) return
+  // Leaving the webview would lose the rest of a held Tab chord on the last card or empty column.
+  const toolbar = (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('.toolbar button')
+  if (toolbar) {
+    event.preventDefault()
+    toolbar.focus()
+  }
+}
+
 function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin: EventTarget | null): boolean {
   if (otherDialogOpen.value) {
     if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
@@ -271,18 +283,15 @@ function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin:
     if (!savingEvent.value) showEventModal.value = false
     return true
   }
-  if (boardQuickActive.value) {
+  const target = tabOrigin ?? event.target
+  if (boardQuickActive.value && target instanceof Element && target.closest('.quick-add')) {
     if (action !== 'dismiss') return false
     board.value?.cancelQuickAdd()
     return true
   }
 
-  const target = tabOrigin ?? event.target
   if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"]')) {
-    // The phase select keeps native typing and arrow keys. Explicit chords
-    // still belong to the board, even when ordinary Tab just focused the select.
-    const boardChord = tabOrigin || event.ctrlKey || event.altKey || event.metaKey
-    if (!target.closest('.board .phase-control') || !boardChord) return false
+    return false
   }
   if (event.repeat && !repeatable.has(action)) return true
   switch (action) {
@@ -301,13 +310,16 @@ function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin:
     case 'confirmDelete':
       return !!board.value
     default:
+      if (!tabOrigin && target instanceof Element && target.closest('article[data-task-id]')) {
+        board.value?.syncSelectionFromFocus(target)
+      }
       return board.value?.runShortcut(action) ?? false
   }
   return true
 }
 
 useShortcutKeys(handleShortcut, target => {
-  if (!editingOrDeleting.value && !otherDialogOpen.value && !boardQuickActive.value) {
+  if (!editingOrDeleting.value && !otherDialogOpen.value && !target?.closest('.quick-add')) {
     board.value?.syncSelectionFromFocus(target)
   }
 })
@@ -347,7 +359,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-container">
+  <div class="app-container" @keydown.tab="wrapBoardTab">
     <app-toolbar
       :syncing="isAISyncing"
       @create="openCreateModal()"

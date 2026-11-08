@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
 import { useMessage } from 'naive-ui'
 import type { ShortcutAction } from '@/shortcuts'
@@ -46,6 +46,7 @@ const lastColumnIds: Record<EventPhase, number[]> = {
   done: []
 }
 const phaseMoveId = ref<number | null>(null)
+const openPhaseId = ref<number | null>(null)
 let phaseMoveToken = 0
 
 const quickPhase = ref<EventPhase | null>(null)
@@ -64,6 +65,44 @@ function setAddButton(phase: EventPhase, element: unknown) {
   else addButtons.delete(phase)
 }
 
+function phasePickerId(id: number): string {
+  return `board-phase-picker-${id}`
+}
+
+function togglePhasePicker(calendarEvent: CalendarEvent, event: MouseEvent) {
+  if (eventsStore.isMoving(calendarEvent.id)) return
+  // WebKit can leave focus on the previous input when a button is clicked.
+  if (event.currentTarget instanceof HTMLButtonElement) event.currentTarget.focus({ preventScroll: true })
+  selectEvent(calendarEvent)
+  openPhaseId.value = openPhaseId.value === calendarEvent.id ? null : calendarEvent.id
+}
+
+let pickerPointerActive = false
+
+function closePickerWhenOutside(event: Event) {
+  if (openPhaseId.value == null) return
+  // A pointer press is handled by the following click, after its target is fixed.
+  if (event.type === 'focusin' && pickerPointerActive) return
+  if (!(event.target instanceof Element)) return
+  const control = event.target.closest('.phase-trigger, .phase-picker')
+  if (control?.closest('article')?.dataset.taskId === String(openPhaseId.value)) return
+  openPhaseId.value = null
+}
+
+function notePickerPointerDown() {
+  pickerPointerActive = true
+}
+
+function resetPickerPointer() {
+  pickerPointerActive = false
+}
+
+function onPickerFocusOut(event: FocusEvent, id: number) {
+  if (openPhaseId.value !== id) return
+  if (event.relatedTarget != null || pickerPointerActive) return
+  openPhaseId.value = null
+}
+
 const draggingId = ref<number | null>(null)
 const dragTarget = ref<EventPhase | null>(null)
 
@@ -76,6 +115,7 @@ watch(quickPhase, async phase => {
 })
 
 watch(selectedDate, () => {
+  openPhaseId.value = null
   activePhase.value = 'todo'
   selectedId.value = null
   for (const phase of eventPhases) lastColumnIds[phase] = []
@@ -86,11 +126,31 @@ watch(selectedDate, () => {
 
 watch(
   [dayEvents, () => eventsStore.loading],
-  () => reconcileSelection(),
+  reconcileSelection,
   { flush: 'post', immediate: true }
 )
 
+watch(selectedId, id => {
+  if (pickerPointerActive) return
+  if (openPhaseId.value !== id) openPhaseId.value = null
+})
+
+onMounted(() => {
+  document.addEventListener('pointerdown', notePickerPointerDown, true)
+  document.addEventListener('focusin', closePickerWhenOutside, true)
+  document.addEventListener('click', closePickerWhenOutside, true)
+  document.addEventListener('pointerup', resetPickerPointer, true)
+  document.addEventListener('pointercancel', resetPickerPointer, true)
+  window.addEventListener('blur', resetPickerPointer)
+})
+
 onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', notePickerPointerDown, true)
+  document.removeEventListener('focusin', closePickerWhenOutside, true)
+  document.removeEventListener('click', closePickerWhenOutside, true)
+  document.removeEventListener('pointerup', resetPickerPointer, true)
+  document.removeEventListener('pointercancel', resetPickerPointer, true)
+  window.removeEventListener('blur', resetPickerPointer)
   emit('quick-state', false)
   phaseMoveToken += 1
 })
@@ -173,10 +233,11 @@ function startDrag(event: DragEvent, calendarEvent: CalendarEvent) {
     return
   }
   const target = event.target as HTMLElement | null
-  if (target?.closest('a, button, select, input, label')) {
+  if (target?.closest('a, button, input, label')) {
     event.preventDefault()
     return
   }
+  openPhaseId.value = null
   draggingId.value = calendarEvent.id
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
@@ -214,16 +275,12 @@ function dropOn(phase: EventPhase) {
   void moveEvent(calendarEvent, phase)
 }
 
-function changePhase(calendarEvent: CalendarEvent, event: Event) {
-  const select = event.target as HTMLSelectElement
-  const phase = select.value
-  if (!isEventPhase(phase)) {
-    select.value = calendarEvent.phase
-    return
-  }
+function choosePhase(calendarEvent: CalendarEvent, phase: EventPhase) {
+  if (openPhaseId.value !== calendarEvent.id || eventsStore.isMoving(calendarEvent.id)) return
+  openPhaseId.value = null
   selectEvent(calendarEvent)
-  if (phase === calendarEvent.phase) return
-  void moveEvent(calendarEvent, phase)
+  if (phase !== calendarEvent.phase) void moveEvent(calendarEvent, phase)
+  void focusSelection()
 }
 
 async function moveEvent(calendarEvent: CalendarEvent, phase: EventPhase) {
@@ -400,13 +457,7 @@ function moveTask(direction: -1 | 1) {
   const events = eventsForPhase(activePhase.value)
   if (!events.length) return
   const index = events.findIndex(event => event.id === selectedId.value)
-  if (index === -1) {
-    selectedId.value = events[0].id
-    void focusSelection()
-    return
-  }
-  const nextIndex = index + direction
-  if (nextIndex < 0 || nextIndex >= events.length) return
+  const nextIndex = Math.max(0, Math.min(index + direction, events.length - 1))
   selectedId.value = events[nextIndex].id
   void focusSelection()
 }
@@ -494,6 +545,13 @@ async function moveSelectedPhase(direction: -1 | 1) {
 }
 
 function runShortcut(action: ShortcutAction): boolean {
+  if (action === 'dismiss') {
+    if (openPhaseId.value == null) return false
+    openPhaseId.value = null
+    void focusSelection()
+    return true
+  }
+  openPhaseId.value = null
   switch (action) {
     case 'columnLeft':
       moveColumn(-1)
@@ -568,6 +626,7 @@ defineExpose({
           :ref="element => setAddButton(column.phase, element)"
           type="button"
           class="add-button"
+          tabindex="0"
           :aria-label="`Add task to ${column.phase}`"
           :title="`Add task to ${column.phase}`"
           @click="openQuick(column.phase)"
@@ -596,7 +655,7 @@ defineExpose({
           @dragend="endDrag"
         >
           <h3 :class="{ bold: calendarEvent.bold }">
-            <button type="button" class="edit-title" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
+            <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
           </h3>
           <p v-if="calendarEvent.phase === 'done' && calendarEvent.result" class="card-result">
             {{ calendarEvent.result }}
@@ -648,20 +707,47 @@ defineExpose({
                 Email
               </button>
             </div>
-            <label class="phase-control" @click.stop>
-              <span class="visually-hidden">Move {{ calendarEvent.title }} to another phase</span>
-              <select
-                :value="calendarEvent.phase"
-                :disabled="eventsStore.isMoving(calendarEvent.id)"
-                @click.stop
-                @keydown.stop
-                @change="changePhase(calendarEvent, $event)"
-              >
-                <option v-for="phase in eventPhases" :key="phase" :value="phase">
-                  {{ phase }}
-                </option>
-              </select>
-            </label>
+            <button
+              type="button"
+              class="phase-trigger"
+              tabindex="0"
+              :aria-label="`Move ${calendarEvent.title} to another phase`"
+              :aria-expanded="openPhaseId === calendarEvent.id"
+              :aria-controls="openPhaseId === calendarEvent.id ? phasePickerId(calendarEvent.id) : undefined"
+              :disabled="eventsStore.isMoving(calendarEvent.id)"
+              @click.stop="togglePhasePicker(calendarEvent, $event)"
+              @focusout="onPickerFocusOut($event, calendarEvent.id)"
+            >
+              <span class="phase-name">{{ calendarEvent.phase }}</span>
+              <svg class="phase-chevron" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="m6 8 4 4 4-4" />
+              </svg>
+            </button>
+          </div>
+          <div
+            v-if="openPhaseId === calendarEvent.id"
+            :id="phasePickerId(calendarEvent.id)"
+            class="phase-picker"
+            role="group"
+            :aria-label="`Phases for ${calendarEvent.title}`"
+            @click.stop
+            @focusout="onPickerFocusOut($event, calendarEvent.id)"
+          >
+            <button
+              v-for="phase in eventPhases"
+              :key="phase"
+              type="button"
+              class="phase-option"
+              tabindex="0"
+              :aria-pressed="phase === calendarEvent.phase"
+              :disabled="eventsStore.isMoving(calendarEvent.id)"
+              @click.stop="choosePhase(calendarEvent, phase)"
+            >
+              <span>{{ phase }}</span>
+              <svg v-if="phase === calendarEvent.phase" class="phase-check" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="m4.5 10.5 3.5 3.5 7.5-8" />
+              </svg>
+            </button>
           </div>
         </article>
 
@@ -1014,30 +1100,14 @@ defineExpose({
   outline-offset: 1px;
 }
 
-.phase-control {
+.phase-trigger {
   display: inline-flex;
-  flex: 0 0 auto;
-  margin-left: auto;
-  align-items: center;
-  color: var(--text-tertiary);
-}
-
-.no-meta .card-footer {
-  position: absolute;
-  top: 5px;
-  right: 3px;
-  margin-left: 0;
-}
-
-.no-meta .phase-control select {
-  max-width: 88px;
-  padding: 1px 2px;
-  font-size: 10.5px;
-}
-
-.phase-control select {
   min-width: 0;
-  padding: 2px 4px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 1px 3px 1px 5px;
   border: 1px solid transparent;
   border-radius: 5px;
   outline: 0;
@@ -1049,27 +1119,122 @@ defineExpose({
   cursor: pointer;
 }
 
-.phase-control select:hover {
+.phase-trigger:hover:not(:disabled),
+.phase-trigger:focus-visible,
+.phase-trigger[aria-expanded='true'] {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
-.phase-control select:focus-visible {
+.phase-trigger:focus-visible {
   border-color: var(--primary-color);
-  color: var(--text-primary);
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
+.phase-trigger:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.phase-name {
+  min-width: 0;
   overflow: hidden;
-  clip: rect(0 0 0 0);
+  text-overflow: ellipsis;
   white-space: nowrap;
-  border: 0;
+}
+
+.phase-chevron {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  opacity: 0.75;
+  transition: transform 140ms ease;
+}
+
+.phase-trigger[aria-expanded='true'] .phase-chevron {
+  transform: rotate(180deg);
+}
+
+.phase-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.phase-option {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.phase-option:hover:not(:disabled),
+.phase-option:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.phase-option:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.phase-option[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--primary-color) 40%, var(--border-soft));
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.phase-option:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.phase-check {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.no-meta .card-footer {
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  margin-left: 0;
+}
+
+.no-meta .phase-trigger {
+  max-width: 88px;
+  font-size: 10.5px;
+}
+
+.no-meta .phase-picker {
+  margin-right: -84px;
 }
 
 .empty {
@@ -1223,7 +1388,7 @@ defineExpose({
 }
 
 @media (hover: none) {
-  .phase-control select {
+  .phase-trigger {
     color: var(--text-secondary);
   }
 }
