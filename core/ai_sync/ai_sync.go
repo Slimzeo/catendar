@@ -320,7 +320,11 @@ func (s *Service) handleCLIRequest(ctx context.Context, state *runState, request
 		if err := validateDateRange(input.From, input.To); err != nil {
 			return nil, err
 		}
-		return s.calendar.GetEventsByDateRange(ctx, input.From, input.To)
+		events, err := s.calendar.GetEventsByDateRange(ctx, input.From, input.To)
+		if err != nil {
+			return nil, err
+		}
+		return withoutManualResults(events), nil
 
 	case "calendar.batch-upsert":
 		state.batchCalls++
@@ -403,6 +407,14 @@ func validateDateRange(from, to string) error {
 		return errors.New("calendar range is invalid or exceeds two years")
 	}
 	return nil
+}
+
+// withoutManualResults keeps the email scheduler's calendar list wire shape unchanged.
+func withoutManualResults(events []calendar.Event) []calendar.Event {
+	for index := range events {
+		events[index].Result = ""
+	}
+	return events
 }
 
 func newRunID() (string, error) {

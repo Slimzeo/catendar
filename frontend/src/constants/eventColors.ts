@@ -10,3 +10,9 @@ export const eventColors = [
   { name: 'Rose', value: '#ad617d' },
   { name: 'Slate', value: '#687386' }
 ]
+
+export function randomEventColor(previousColor = ''): string {
+  const previous = previousColor.toLowerCase()
+  const candidates = eventColors.filter(color => color.value !== previous)
+  return candidates[Math.floor(Math.random() * candidates.length)].value
+}

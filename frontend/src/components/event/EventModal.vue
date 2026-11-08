@@ -11,7 +11,9 @@ const props = withDefaults(defineProps<{
   event?: CalendarEvent | null
   defaultDate?: string
   defaultTitle?: string
+  defaultColor: string
   defaultPhase?: EventPhase
+  focusResult?: boolean
   variant?: 'board' | 'calendar'
   saving?: boolean
 }>(), {
@@ -19,6 +21,7 @@ const props = withDefaults(defineProps<{
   defaultDate: '',
   defaultTitle: '',
   defaultPhase: 'todo',
+  focusResult: false,
   variant: 'calendar',
   saving: false
 })
@@ -30,14 +33,16 @@ const emit = defineEmits<{
 }>()
 
 const titleInputRef = ref<{ focus: () => void } | null>(null)
+const resultInputRef = ref<{ focus: () => void } | null>(null)
 const title = ref('')
 const description = ref('')
+const result = ref('')
 const startDate = ref<number | null>(null)
 const startTime = ref('09:00')
 const endTime = ref('10:00')
 const endDate = ref('')
 const allDay = ref(true)
-const selectedColor = ref('#7663b5')
+const selectedColor = ref(props.defaultColor)
 const bold = ref(false)
 const phase = ref<EventPhase>('todo')
 const deadline = ref('')
@@ -76,7 +81,13 @@ watch(
   show => {
     if (!show) return
     initializeForm()
-    nextTick(() => titleInputRef.value?.focus())
+    nextTick(() => {
+      if (props.focusResult && phase.value === 'progressing') {
+        resultInputRef.value?.focus()
+        return
+      }
+      titleInputRef.value?.focus()
+    })
   },
   { immediate: true }
 )
@@ -93,6 +104,7 @@ function initializeForm() {
       const end = props.event.end ? parseISO(props.event.end) : null
       title.value = props.event.title
       description.value = props.event.description || ''
+      result.value = props.event.result || ''
       startDate.value = start.getTime()
       startTime.value = format(start, 'HH:mm')
       endTime.value = end ? format(end, 'HH:mm') : ''
@@ -108,12 +120,13 @@ function initializeForm() {
     const date = props.defaultDate ? parseISO(props.defaultDate) : new Date()
     title.value = props.defaultTitle
     description.value = ''
+    result.value = ''
     startDate.value = date.getTime()
     startTime.value = '09:00'
     endTime.value = '10:00'
     endDate.value = format(date, 'yyyy-MM-dd')
     allDay.value = true
-    selectedColor.value = '#7663b5'
+    selectedColor.value = props.defaultColor
     bold.value = false
     phase.value = props.defaultPhase
     deadline.value = ''
@@ -168,17 +181,20 @@ function handleSave() {
     }
   }
 
-  emit('save', {
+  const resultValue = result.value.trim()
+  const input: EventInput = {
     title: trimmedTitle,
     description: description.value.trim(),
     start,
     end,
     allDay: allDay.value,
     color: selectedColor.value,
-    bold: bold.value,
-    phase: phase.value,
-    deadline: trimmedDeadline
-  })
+    bold: bold.value
+  }
+  if (phase.value !== props.event?.phase) input.phase = phase.value
+  if (trimmedDeadline !== (props.event?.deadline || '')) input.deadline = trimmedDeadline
+  if (resultValue !== (props.event?.result || '').trim()) input.result = resultValue
+  emit('save', input)
 }
 
 function handleDelete() {
@@ -238,11 +254,33 @@ function handleDelete() {
           <n-input
             v-model:value="description"
             type="textarea"
-            :textarea-props="{ id: 'event-description' }"
+            :input-props="{ id: 'event-description' }"
             placeholder="Notes, location, or meeting link"
             :rows="3"
             :disabled="saving"
           />
+        </div>
+
+        <div v-if="phase === 'progressing'" class="form-group result-field">
+          <label for="event-result">
+            Result
+            <span class="optional">Optional</span>
+          </label>
+          <n-input
+            ref="resultInputRef"
+            v-model:value="result"
+            type="textarea"
+            :input-props="{ id: 'event-result' }"
+            placeholder="Outcome, progress, or next step"
+            :rows="3"
+            :disabled="saving"
+            @input="formError = ''"
+          />
+        </div>
+
+        <div v-else-if="phase === 'done' && result.trim()" class="form-group result-field">
+          <label>Result</label>
+          <div class="result-readonly">{{ result }}</div>
         </div>
 
         <div class="form-row phase-row">
@@ -582,6 +620,18 @@ function handleDelete() {
 
 .description-field {
   margin-bottom: 17px;
+}
+
+.result-readonly {
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .field-error {

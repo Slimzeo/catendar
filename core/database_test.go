@@ -44,7 +44,7 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		t.Fatalf("migrate database: %v", err)
 	}
 	for _, column := range []string{
-		"description", "bold", "phase", "deadline", "source_type",
+		"description", "result", "bold", "phase", "deadline", "source_type",
 		"source_account_id", "source_message_id", "source_url",
 	} {
 		var count int
@@ -58,10 +58,10 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		}
 	}
 
-	var title, start, color, phase, deadline string
+	var title, start, color, phase, deadline, result string
 	if err := db.QueryRow(`
-		SELECT title, start, color, phase, deadline FROM events WHERE id = 1
-	`).Scan(&title, &start, &color, &phase, &deadline); err != nil {
+		SELECT title, start, color, phase, deadline, result FROM events WHERE id = 1
+	`).Scan(&title, &start, &color, &phase, &deadline, &result); err != nil {
 		db.Close()
 		t.Fatalf("read legacy row: %v", err)
 	}
@@ -69,9 +69,15 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		db.Close()
 		t.Fatalf("legacy row changed: title=%q start=%q color=%q", title, start, color)
 	}
-	if phase != "todo" || deadline != "" {
+	if phase != "todo" || deadline != "" || result != "" {
 		db.Close()
-		t.Fatalf("legacy row defaults = phase %q deadline %q", phase, deadline)
+		t.Fatalf("legacy row defaults = phase %q deadline %q result %q", phase, deadline, result)
+	}
+
+	const migratedResult = "迁移后\n保留结果"
+	if _, err := db.Exec("UPDATE events SET result = ? WHERE id = 1", migratedResult); err != nil {
+		db.Close()
+		t.Fatalf("set migrated result: %v", err)
 	}
 
 	var indexCount int
@@ -92,7 +98,7 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		t.Fatalf("reopen migrated database: %v", err)
 	}
 	defer reopened.Close()
-	for _, column := range []string{"phase", "deadline"} {
+	for _, column := range []string{"phase", "deadline", "result"} {
 		var count int
 		if err := reopened.QueryRow("SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = ?", column).Scan(&count); err != nil {
 			t.Fatalf("re-inspect column %s: %v", column, err)
@@ -101,11 +107,11 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 			t.Fatalf("column %s was duplicated or removed on reopen", column)
 		}
 	}
-	if err := reopened.QueryRow("SELECT phase, deadline FROM events WHERE id = 1").Scan(&phase, &deadline); err != nil {
+	if err := reopened.QueryRow("SELECT phase, deadline, result FROM events WHERE id = 1").Scan(&phase, &deadline, &result); err != nil {
 		t.Fatalf("read legacy row after reopen: %v", err)
 	}
-	if phase != "todo" || deadline != "" {
-		t.Fatalf("legacy row changed after reopen: phase=%q deadline=%q", phase, deadline)
+	if phase != "todo" || deadline != "" || result != migratedResult {
+		t.Fatalf("legacy row changed after reopen: phase=%q deadline=%q result=%q", phase, deadline, result)
 	}
 	var eventCount int
 	if err := reopened.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil {

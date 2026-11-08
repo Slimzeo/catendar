@@ -2,11 +2,13 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { format } from 'date-fns'
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
+import { randomEventColor } from '@/constants/eventColors'
 import { eventApi } from '@/services/api'
 import { useCalendarStore } from './calendar'
 
 export const useEventsStore = defineStore('events', () => {
   const events = ref<CalendarEvent[]>([])
+  const nextCreateColor = ref(randomEventColor())
   const loading = ref(false)
   const error = ref<string | null>(null)
   const loadedStart = ref('')
@@ -58,6 +60,7 @@ export const useEventsStore = defineStore('events', () => {
   async function createEvent(input: EventInput): Promise<CalendarEvent> {
     try {
       const newEvent = await eventApi.createEvent(input)
+      nextCreateColor.value = randomEventColor(newEvent.color)
       if (!events.value.some(event => event.id === newEvent.id)) {
         events.value.push(newEvent)
       }
@@ -130,6 +133,7 @@ export const useEventsStore = defineStore('events', () => {
   }
 
   return {
+    nextCreateColor,
     loading,
     error,
     eventsByDate,

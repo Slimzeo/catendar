@@ -11,7 +11,7 @@ import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
 
 const emit = defineEmits<{
-  (event: 'edit', calendarEvent: CalendarEvent): void
+  (event: 'edit', calendarEvent: CalendarEvent, focusResult?: boolean): void
   (event: 'create-details', phase: EventPhase, title: string): void
   (event: 'open-email', sourceURL: string): void
   (event: 'quick-state', active: boolean): void
@@ -112,7 +112,7 @@ async function submitQuick() {
       title,
       start: `${selectedDate.value}T00:00:00`,
       end: `${selectedDate.value}T00:00:00`,
-      color: '#7663b5',
+      color: eventsStore.nextCreateColor,
       allDay: true,
       description: '',
       bold: false,
@@ -122,14 +122,14 @@ async function submitQuick() {
     await eventsStore.createEvent(input)
     quickTitle.value = ''
     quickError.value = ''
-    await nextTick()
-    quickInput.value?.focus()
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Could not add the task'
     quickError.value = detail
     message.error(detail)
   } finally {
     quickSaving.value = false
+    await nextTick()
+    if (document.activeElement === document.body) quickInput.value?.focus()
   }
 }
 
@@ -200,6 +200,10 @@ async function moveEvent(calendarEvent: CalendarEvent, phase: EventPhase) {
 
 function openEvent(calendarEvent: CalendarEvent) {
   emit('edit', calendarEvent)
+}
+
+function openResultEditor(calendarEvent: CalendarEvent) {
+  emit('edit', calendarEvent, true)
 }
 
 function eventTime(event: CalendarEvent): string {
@@ -298,6 +302,9 @@ function hasMeta(event: CalendarEvent): boolean {
           <h3 :class="{ bold: calendarEvent.bold }">
             <button type="button" class="edit-title" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
           </h3>
+          <p v-if="calendarEvent.phase === 'done' && calendarEvent.result" class="card-result">
+            {{ calendarEvent.result }}
+          </p>
           <event-description
             v-if="cardDescription(calendarEvent)"
             class="card-description"
@@ -305,6 +312,15 @@ function hasMeta(event: CalendarEvent): boolean {
             :clamp="2"
             @open-email="sourceURL => emit('open-email', sourceURL)"
           />
+          <button
+            v-if="calendarEvent.phase === 'progressing'"
+            type="button"
+            class="result-action"
+            :aria-label="`${calendarEvent.result ? 'Edit' : 'Add'} result for ${calendarEvent.title}`"
+            @click.stop="openResultEditor(calendarEvent)"
+          >
+            {{ calendarEvent.result ? 'Edit result' : 'Add result' }}
+          </button>
           <div class="card-footer">
             <div v-if="hasMeta(calendarEvent)" class="card-meta">
               <span v-if="themeStore.showTime && eventTime(calendarEvent)" class="meta-item">
@@ -527,7 +543,7 @@ function hasMeta(event: CalendarEvent): boolean {
 }
 
 .card.no-meta {
-  padding-right: 82px;
+  padding-right: 94px;
 }
 
 .card::before {
@@ -589,6 +605,40 @@ function hasMeta(event: CalendarEvent): boolean {
   margin-top: 2px;
   font-size: 12.5px;
   -webkit-line-clamp: 2;
+}
+
+.card-result {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.result-action {
+  display: inline-flex;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.result-action:hover,
+.result-action:focus-visible {
+  color: var(--primary-color);
+}
+
+.result-action:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .card-footer {
@@ -668,7 +718,7 @@ function hasMeta(event: CalendarEvent): boolean {
 }
 
 .no-meta .phase-control select {
-  max-width: 76px;
+  max-width: 88px;
   padding: 1px 2px;
   font-size: 10.5px;
 }

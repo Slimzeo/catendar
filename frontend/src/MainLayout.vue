@@ -29,6 +29,7 @@ const defaultTitle = ref('')
 const defaultPhase = ref<EventPhase>('todo')
 const modalVariant = ref<'board' | 'calendar'>('calendar')
 const savingEvent = ref(false)
+const focusResultOnOpen = ref(false)
 const boardQuickActive = ref(false)
 
 const showAISyncModal = ref(false)
@@ -90,6 +91,7 @@ function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo',
   defaultDate.value = date
   defaultTitle.value = title
   defaultPhase.value = phase
+  focusResultOnOpen.value = false
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
 }
@@ -98,11 +100,12 @@ function openCreateDetails(phase: EventPhase, title: string) {
   openCreateModal(calendarStore.focusedDate, phase, title)
 }
 
-function openEditModal(event: CalendarEvent) {
+function openEditModal(event: CalendarEvent, focusResult = false) {
   showDayDrawer.value = false
   editingEvent.value = event
   defaultDate.value = ''
   defaultTitle.value = ''
+  focusResultOnOpen.value = focusResult
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
 }
@@ -368,7 +371,9 @@ onUnmounted(() => {
       :event="editingEvent"
       :default-date="defaultDate"
       :default-title="defaultTitle"
+      :default-color="eventsStore.nextCreateColor"
       :default-phase="defaultPhase"
+      :focus-result="focusResultOnOpen"
       :variant="modalVariant"
       :saving="savingEvent"
       @save="handleSave"

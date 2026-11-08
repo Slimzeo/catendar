@@ -56,6 +56,7 @@ func createTables(db *sql.DB) error {
 			color TEXT NOT NULL,
 			all_day INTEGER NOT NULL DEFAULT 1,
 			description TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
 			bold INTEGER NOT NULL DEFAULT 0,
 			phase TEXT NOT NULL DEFAULT 'todo',
 			deadline TEXT NOT NULL DEFAULT '',
@@ -99,6 +100,7 @@ func migrateEvents(db *sql.DB) error {
 		definition string
 	}{
 		{"description", "TEXT NOT NULL DEFAULT ''"},
+		{"result", "TEXT NOT NULL DEFAULT ''"},
 		{"bold", "INTEGER NOT NULL DEFAULT 0"},
 		{"phase", "TEXT NOT NULL DEFAULT 'todo'"},
 		{"deadline", "TEXT NOT NULL DEFAULT ''"},

@@ -8,6 +8,7 @@ export interface CalendarEvent {
   color: string
   allDay: boolean
   description: string
+  result?: string
   bold: boolean
   phase: EventPhase
   deadline?: string
@@ -22,6 +23,7 @@ export interface EventInput {
   color: string
   allDay: boolean
   description: string
+  result?: string
   bold: boolean
   phase?: EventPhase
   deadline?: string

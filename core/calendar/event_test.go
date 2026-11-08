@@ -28,6 +28,7 @@ func testService(t *testing.T) *Service {
 			color TEXT NOT NULL,
 			all_day INTEGER NOT NULL DEFAULT 1,
 			description TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
 			bold INTEGER NOT NULL DEFAULT 0,
 			phase TEXT NOT NULL DEFAULT 'todo',
 			deadline TEXT NOT NULL DEFAULT '',
@@ -195,6 +196,92 @@ func TestCreateEventValidatesPhaseAndDeadline(t *testing.T) {
 	}
 }
 
+func TestCreateEventTrimsAndPersistsMultilineResult(t *testing.T) {
+	service := testService(t)
+	ctx := context.Background()
+	const result = "第一行\nsecond line\n第三行"
+
+	created, err := service.CreateEvent(ctx, EventInput{
+		Title:  "Release notes",
+		Start:  "2026-09-08T00:00:00",
+		Color:  defaultEventColor,
+		Result: eventTestStringPointer(" \n" + result + "\n "),
+	})
+	if err != nil {
+		t.Fatalf("create event with result: %v", err)
+	}
+	if created.Result != result {
+		t.Fatalf("result = %q, want %q", created.Result, result)
+	}
+
+	events, err := service.GetEventsByDateRange(ctx, "2026-09-08", "2026-09-08")
+	if err != nil {
+		t.Fatalf("get events: %v", err)
+	}
+	if len(events) != 1 || events[0].Result != result {
+		t.Fatalf("range read did not return the result: %#v", events)
+	}
+
+	withoutResult, err := service.CreateEvent(ctx, EventInput{
+		Title: "No result",
+		Start: "2026-09-09T00:00:00",
+		Color: defaultEventColor,
+	})
+	if err != nil {
+		t.Fatalf("create event without result: %v", err)
+	}
+	if withoutResult.Result != "" {
+		t.Fatalf("result = %q, want empty", withoutResult.Result)
+	}
+}
+
+func TestUpdateEventResultOmittedPreservesAndExplicitClear(t *testing.T) {
+	service := testService(t)
+	ctx := context.Background()
+	created, err := service.CreateEvent(ctx, EventInput{
+		Title:  "Result task",
+		Start:  "2026-09-08T00:00:00",
+		Color:  defaultEventColor,
+		Phase:  PhaseProgressing,
+		Result: eventTestStringPointer("Initial\nresult"),
+	})
+	if err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+
+	input := eventTestInput(*created)
+	input.Title = "Renamed task"
+	input.Phase = PhaseTodo
+	updated, err := service.UpdateEvent(ctx, created.ID, input)
+	if err != nil {
+		t.Fatalf("update without result: %v", err)
+	}
+	if updated.Result != "Initial\nresult" || updated.Phase != PhaseTodo {
+		t.Fatalf("omitted result = %q phase = %q, want preserved result in todo", updated.Result, updated.Phase)
+	}
+
+	input = eventTestInput(*updated)
+	input.Phase = PhaseDone
+	input.Result = eventTestStringPointer("  Updated\n结果  ")
+	updated, err = service.UpdateEvent(ctx, created.ID, input)
+	if err != nil {
+		t.Fatalf("update result: %v", err)
+	}
+	if updated.Result != "Updated\n结果" || updated.Phase != PhaseDone {
+		t.Fatalf("updated result = %q phase = %q, want trimmed multiline result and done phase", updated.Result, updated.Phase)
+	}
+
+	input = eventTestInput(*updated)
+	input.Result = eventTestStringPointer("")
+	cleared, err := service.UpdateEvent(ctx, created.ID, input)
+	if err != nil {
+		t.Fatalf("clear result: %v", err)
+	}
+	if cleared.Result != "" {
+		t.Fatalf("cleared result = %q, want empty", cleared.Result)
+	}
+}
+
 func TestSetEventPhaseOnlyChangesPhase(t *testing.T) {
 	service := testService(t)
 	ctx := context.Background()
@@ -205,6 +292,7 @@ func TestSetEventPhaseOnlyChangesPhase(t *testing.T) {
 		Color:       "#123456",
 		AllDay:      false,
 		Description: "Keep every field",
+		Result:      eventTestStringPointer("Phase-safe\nresult"),
 		Bold:        true,
 		Deadline:    eventTestStringPointer("2026-09-30"),
 	})
@@ -221,7 +309,8 @@ func TestSetEventPhaseOnlyChangesPhase(t *testing.T) {
 	}
 	if updated.ID != created.ID || updated.Title != created.Title || updated.Start != created.Start ||
 		updated.End != created.End || updated.Color != created.Color || updated.AllDay != created.AllDay ||
-		updated.Description != created.Description || updated.Bold != created.Bold || updated.Deadline != created.Deadline {
+		updated.Description != created.Description || updated.Bold != created.Bold || updated.Deadline != created.Deadline ||
+		updated.Result != created.Result {
 		t.Fatalf("phase update changed other fields: before=%#v after=%#v", created, updated)
 	}
 
@@ -352,7 +441,7 @@ func TestBatchCreateFromEmailAddsSourceAndDeduplicates(t *testing.T) {
 	if len(events) != 1 || !strings.Contains(events[0].Description, sources["42:7"].URL) {
 		t.Fatalf("source link missing from event: %#v", events)
 	}
-	if events[0].Phase != PhaseTodo || events[0].Deadline != "" {
+	if events[0].Phase != PhaseTodo || events[0].Deadline != "" || events[0].Result != "" {
 		t.Fatalf("email event did not start as todo: %#v", events[0])
 	}
 }
@@ -375,6 +464,13 @@ func TestRepeatImportPreservesSameTitleAtDifferentTimesAndBoardProgress(t *testi
 	if err != nil || len(events) != 2 {
 		t.Fatalf("get imported rounds: events=%+v err=%v", events, err)
 	}
+	roundResult := "一面通过\n等待二面安排"
+	update := eventTestInput(events[0])
+	update.Phase = PhaseProgressing
+	update.Result = eventTestStringPointer(roundResult)
+	if _, err := service.UpdateEvent(ctx, events[0].ID, update); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.SetEventPhase(ctx, events[0].ID, PhaseDone); err != nil {
 		t.Fatal(err)
 	}
@@ -385,5 +481,8 @@ func TestRepeatImportPreservesSameTitleAtDifferentTimesAndBoardProgress(t *testi
 	after, err := service.GetEventsByDateRange(ctx, "2026-09-08", "2026-09-08")
 	if err != nil || len(after) != 2 || after[0].ID != events[0].ID || after[0].Phase != PhaseDone || after[1].Phase != PhaseTodo {
 		t.Fatalf("unexpected rounds after repeat: events=%+v err=%v", after, err)
+	}
+	if after[0].Result != roundResult {
+		t.Fatalf("repeat import changed result: %q", after[0].Result)
 	}
 }
