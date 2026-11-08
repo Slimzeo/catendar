@@ -4,11 +4,12 @@ import { format } from 'date-fns'
 import { NButton, useMessage } from 'naive-ui'
 import MonthlyCalendar from './components/calendar/MonthlyCalendar.vue'
 import AppToolbar from './components/common/AppToolbar.vue'
+import DailyBoard from './components/board/DailyBoard.vue'
 import DayEventsDrawer from './components/event/DayEventsDrawer.vue'
 import { useCalendarStore } from './stores/calendar'
 import { useEventsStore } from './stores/events'
 import { aiSyncApi } from './services/api'
-import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput } from './types'
+import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput, EventPhase } from './types'
 
 const loadEventModal = () => import('./components/event/EventModal.vue')
 const loadAISyncModal = () => import('./components/ai-sync/AISyncModal.vue')
@@ -24,7 +25,11 @@ const message = useMessage()
 const showEventModal = ref(false)
 const editingEvent = ref<CalendarEvent | null>(null)
 const defaultDate = ref('')
+const defaultTitle = ref('')
+const defaultPhase = ref<EventPhase>('todo')
+const modalVariant = ref<'board' | 'calendar'>('calendar')
 const savingEvent = ref(false)
+const boardQuickActive = ref(false)
 
 const showAISyncModal = ref(false)
 const showAISyncStatus = ref(false)
@@ -67,34 +72,56 @@ function openDayDrawer(date: string) {
   showDayDrawer.value = true
 }
 
-function openCreateModal(date = format(new Date(), 'yyyy-MM-dd')) {
+function openBoardFromDrawer(date: string) {
+  showDayDrawer.value = false
+  calendarStore.goToDate(date)
+  calendarStore.setView('board')
+}
+
+function defaultCreateDate() {
+  return calendarStore.viewMode === 'board'
+    ? calendarStore.focusedDate
+    : format(new Date(), 'yyyy-MM-dd')
+}
+
+function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo', title = '') {
   showDayDrawer.value = false
   editingEvent.value = null
   defaultDate.value = date
+  defaultTitle.value = title
+  defaultPhase.value = phase
+  modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
+}
+
+function openCreateDetails(phase: EventPhase, title: string) {
+  openCreateModal(calendarStore.focusedDate, phase, title)
 }
 
 function openEditModal(event: CalendarEvent) {
   showDayDrawer.value = false
   editingEvent.value = event
   defaultDate.value = ''
+  defaultTitle.value = ''
+  modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   showEventModal.value = true
 }
 
 async function handleSave(input: EventInput) {
   if (savingEvent.value) return
   savingEvent.value = true
+  const task = modalVariant.value === 'board'
   try {
     if (editingEvent.value?.id) {
       await eventsStore.updateEvent(editingEvent.value.id, input)
-      message.success('Changes saved')
+      message.success(task ? 'Task saved' : 'Changes saved')
     } else {
       await eventsStore.createEvent(input)
-      message.success('Event created')
+      message.success(task ? 'Task created' : 'Event created')
     }
     showEventModal.value = false
   } catch {
-    message.error(eventsStore.error || 'Could not save the event')
+    message.error(eventsStore.error || (task ? 'Could not save the task' : 'Could not save the event'))
   } finally {
     savingEvent.value = false
   }
@@ -103,12 +130,13 @@ async function handleSave(input: EventInput) {
 async function handleDelete(id: number) {
   if (savingEvent.value) return
   savingEvent.value = true
+  const task = modalVariant.value === 'board'
   try {
     await eventsStore.deleteEvent(id)
-    message.success('Event deleted')
+    message.success(task ? 'Task deleted' : 'Event deleted')
     showEventModal.value = false
   } catch {
-    message.error(eventsStore.error || 'Could not delete the event')
+    message.error(eventsStore.error || (task ? 'Could not delete the task' : 'Could not delete the event'))
   } finally {
     savingEvent.value = false
   }
@@ -194,17 +222,38 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 function handleKeyboardShortcut(event: KeyboardEvent) {
+  if (event.defaultPrevented) return
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
   const target = event.target as HTMLElement | null
-  if (target?.closest('input, textarea, select, button, [contenteditable="true"]')) return
-  if (showEventModal.value || showDayDrawer.value) return
+  if (target?.closest('input, textarea, select, button, a, [contenteditable="true"]')) return
+  if (
+    showEventModal.value ||
+    showDayDrawer.value ||
+    showAISyncModal.value ||
+    showEmailSource.value ||
+    boardQuickActive.value
+  ) return
 
-  if (event.key === 'ArrowLeft') {
+  const key = event.key.toLowerCase()
+  if (calendarStore.viewMode === 'board') {
+    if (event.key === 'ArrowLeft') {
+      calendarStore.prevDay()
+    } else if (event.key === 'ArrowRight') {
+      calendarStore.nextDay()
+    } else if (key === 'n') {
+      openCreateModal(calendarStore.focusedDate)
+    } else if (key === 't') {
+      calendarStore.goToToday()
+    } else {
+      return
+    }
+  } else if (event.key === 'ArrowLeft') {
     calendarStore.prevMonth()
   } else if (event.key === 'ArrowRight') {
     calendarStore.nextMonth()
-  } else if (event.key.toLowerCase() === 't') {
+  } else if (key === 't') {
     calendarStore.goToToday()
-  } else if (event.key.toLowerCase() === 'n') {
+  } else if (key === 'n') {
     openCreateModal()
   } else {
     return
@@ -286,7 +335,15 @@ onUnmounted(() => {
         </div>
       </transition>
 
+      <daily-board
+        v-if="calendarStore.viewMode === 'board'"
+        @edit="openEditModal"
+        @create-details="openCreateDetails"
+        @open-email="openSourceEmail"
+        @quick-state="boardQuickActive = $event"
+      />
       <monthly-calendar
+        v-else
         @show-day="openDayDrawer"
         @create="openCreateModal"
         @edit="openEditModal"
@@ -302,6 +359,7 @@ onUnmounted(() => {
       @edit="openEditModal"
       @toggle-side="drawerSide = drawerSide === 'left' ? 'right' : 'left'"
       @open-email="openSourceEmail"
+      @open-board="openBoardFromDrawer"
     />
 
     <event-modal
@@ -309,6 +367,9 @@ onUnmounted(() => {
       v-model:show="showEventModal"
       :event="editingEvent"
       :default-date="defaultDate"
+      :default-title="defaultTitle"
+      :default-phase="defaultPhase"
+      :variant="modalVariant"
       :saving="savingEvent"
       @save="handleSave"
       @delete="handleDelete"

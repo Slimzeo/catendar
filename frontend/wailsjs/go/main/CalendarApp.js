@@ -14,6 +14,10 @@ export function GetEvents(arg1, arg2) {
   return window['go']['main']['CalendarApp']['GetEvents'](arg1, arg2);
 }
 
+export function SetEventPhase(arg1, arg2) {
+  return window['go']['main']['CalendarApp']['SetEventPhase'](arg1, arg2);
+}
+
 export function UpdateEvent(arg1, arg2) {
   return window['go']['main']['CalendarApp']['UpdateEvent'](arg1, arg2);
 }

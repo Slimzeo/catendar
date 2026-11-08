@@ -26,6 +26,10 @@ func (a *CalendarApp) UpdateEvent(id int64, input calendar.EventInput) (*calenda
 	return a.calendar.UpdateEvent(context.Background(), id, input)
 }
 
+func (a *CalendarApp) SetEventPhase(id int64, phase string) (*calendar.Event, error) {
+	return a.calendar.SetEventPhase(context.Background(), id, phase)
+}
+
 func (a *CalendarApp) DeleteEvent(id int64) error {
 	return a.calendar.DeleteEvent(context.Background(), id)
 }

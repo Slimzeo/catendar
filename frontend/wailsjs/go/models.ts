@@ -146,6 +146,8 @@ export namespace calendar {
 	    allDay: boolean;
 	    description: string;
 	    bold: boolean;
+	    phase: string;
+	    deadline?: string;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -165,6 +167,8 @@ export namespace calendar {
 	        this.allDay = source["allDay"];
 	        this.description = source["description"];
 	        this.bold = source["bold"];
+	        this.phase = source["phase"];
+	        this.deadline = source["deadline"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
@@ -195,6 +199,8 @@ export namespace calendar {
 	    allDay: boolean;
 	    description: string;
 	    bold: boolean;
+	    phase?: string;
+	    deadline?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new EventInput(source);
@@ -209,6 +215,8 @@ export namespace calendar {
 	        this.allDay = source["allDay"];
 	        this.description = source["description"];
 	        this.bold = source["bold"];
+	        this.phase = source["phase"];
+	        this.deadline = source["deadline"];
 	    }
 	}
 

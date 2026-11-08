@@ -148,7 +148,7 @@ func (s *localSession) handleRequest(
 		} else {
 			encoded, err := json.Marshal(result)
 			if err != nil {
-				response.Error = "CATendar Core could not encode the result"
+				response.Error = "catendar Core could not encode the result"
 			} else {
 				response.OK = true
 				response.Data = encoded

@@ -76,7 +76,7 @@ func (a *AISyncApp) SaveAISettings(settings ai_sync.Settings) error {
 
 func (a *AISyncApp) StartAISync() (ai_sync.Status, error) {
 	if a.ctx == nil {
-		return ai_sync.Status{}, errors.New("CATendar is not ready")
+		return ai_sync.Status{}, errors.New("catendar is not ready")
 	}
 	return a.aiSync.Start(a.ctx)
 }

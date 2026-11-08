@@ -32,11 +32,11 @@ func main() {
 	}
 	executablePath, err := os.Executable()
 	if err != nil {
-		log.Fatalf("Failed to locate CATendar executable: %v", err)
+		log.Fatalf("Failed to locate catendar executable: %v", err)
 	}
 	backend, err := core.Open(dbPath, core.Options{ExecutablePath: executablePath})
 	if err != nil {
-		log.Fatalf("Failed to initialize CATendar Core: %v", err)
+		log.Fatalf("Failed to initialize catendar Core: %v", err)
 	}
 	calendarApp := NewCalendarApp(backend.Calendar)
 	aiSyncApp := NewAISyncApp(backend.Email, backend.AISync)
@@ -45,17 +45,17 @@ func main() {
 		shutdownOnce.Do(func() {
 			stopSystray()
 			if err := backend.Close(); err != nil {
-				log.Printf("[CATendar] Shutdown error: %v", err)
+				log.Printf("[catendar] Shutdown error: %v", err)
 			}
 		})
 	}
 	defer shutdown()
 
 	startSystray()
-	log.Println("[CATendar] Core initialized")
+	log.Println("[catendar] Core initialized")
 
 	err = wails.Run(&options.App{
-		Title:             "CATendar",
+		Title:             "catendar",
 		Width:             1000,
 		Height:            700,
 		MinWidth:          360,
@@ -67,7 +67,7 @@ func main() {
 			aiSyncApp.startup(ctx)
 		},
 		OnDomReady: func(ctx context.Context) {
-			log.Println("[CATendar] App ready")
+			log.Println("[catendar] App ready")
 		},
 		OnShutdown: func(ctx context.Context) {
 			shutdown()
@@ -87,8 +87,8 @@ func databasePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	appDir := filepath.Join(configDir, "CATendar")
-	if err := os.MkdirAll(appDir, 0o755); err != nil {
+	appDir, err := core.PrepareDataDirectory(configDir)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Join(appDir, "calendar.db"), nil

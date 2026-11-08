@@ -2,9 +2,19 @@ package core
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
+)
+
+const (
+	dataDirectoryName       = "catendar"
+	legacyDataDirectoryName = "CATendar"
+	databaseFileName        = "calendar.db"
 )
 
 func openDatabase(path string) (*sql.DB, error) {
@@ -47,6 +57,8 @@ func createTables(db *sql.DB) error {
 			all_day INTEGER NOT NULL DEFAULT 1,
 			description TEXT NOT NULL DEFAULT '',
 			bold INTEGER NOT NULL DEFAULT 0,
+			phase TEXT NOT NULL DEFAULT 'todo',
+			deadline TEXT NOT NULL DEFAULT '',
 			source_type TEXT NOT NULL DEFAULT '',
 			source_account_id TEXT NOT NULL DEFAULT '',
 			source_message_id TEXT NOT NULL DEFAULT '',
@@ -88,6 +100,8 @@ func migrateEvents(db *sql.DB) error {
 	}{
 		{"description", "TEXT NOT NULL DEFAULT ''"},
 		{"bold", "INTEGER NOT NULL DEFAULT 0"},
+		{"phase", "TEXT NOT NULL DEFAULT 'todo'"},
+		{"deadline", "TEXT NOT NULL DEFAULT ''"},
 		{"source_type", "TEXT NOT NULL DEFAULT ''"},
 		{"source_account_id", "TEXT NOT NULL DEFAULT ''"},
 		{"source_message_id", "TEXT NOT NULL DEFAULT ''"},
@@ -118,4 +132,63 @@ func migrateEvents(db *sql.DB) error {
 		return fmt.Errorf("create email event index: %w", err)
 	}
 	return nil
+}
+
+// PrepareDataDirectory keeps a legacy database and its SQLite sidecars together.
+func PrepareDataDirectory(configDir string) (string, error) {
+	return resolveDataDirectory(filepath.Join(configDir, dataDirectoryName), filepath.Join(configDir, legacyDataDirectoryName))
+}
+
+func resolveDataDirectory(current, legacy string) (string, error) {
+	old, err := os.Stat(legacy)
+	if errors.Is(err, fs.ErrNotExist) {
+		return current, os.MkdirAll(current, 0o755)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !old.IsDir() {
+		return "", fmt.Errorf("legacy data path %s is not a directory", legacy)
+	}
+
+	dir, err := os.Stat(current)
+	if errors.Is(err, fs.ErrNotExist) {
+		// A directory rename moves even uncheckpointed WAL data in one step.
+		if err := os.Rename(legacy, current); err != nil {
+			// Another instance can complete the same migration before this one.
+			if _, oldErr := os.Stat(legacy); !errors.Is(oldErr, fs.ErrNotExist) {
+				return "", err
+			}
+			if dir, statErr := os.Stat(current); statErr != nil || !dir.IsDir() {
+				return "", err
+			}
+		}
+		return current, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !dir.IsDir() {
+		return "", fmt.Errorf("data path %s is not a directory", current)
+	}
+	if os.SameFile(old, dir) {
+		// Some volumes refuse case-only renames while the app is open.
+		// Both spellings already reach the same database on those volumes.
+		_ = os.Rename(legacy, current)
+		return current, nil
+	}
+
+	// If both directories exist on a case-sensitive volume, use the one
+	// with the database. Prefer the current location when both have one.
+	if _, err := os.Stat(filepath.Join(current, databaseFileName)); err == nil {
+		return current, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(legacy, databaseFileName)); err == nil {
+		return legacy, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return current, nil
 }

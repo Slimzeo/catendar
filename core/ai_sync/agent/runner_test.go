@@ -17,7 +17,7 @@ func TestReadTailDrainsLargeOutputAndKeepsTheEnd(t *testing.T) {
 	}
 }
 
-func TestAdaptersUseTheSharedCATendarCLI(t *testing.T) {
+func TestAdaptersUseTheSharedCLI(t *testing.T) {
 	request := RunRequest{
 		BinaryPath: "/usr/local/bin/agent",
 		WorkDir:    "/tmp/catendar-run",

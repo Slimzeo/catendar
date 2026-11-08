@@ -3,13 +3,7 @@ import { computed } from 'vue'
 import { format, parseISO } from 'date-fns'
 import { NButton, NDrawer, NDrawerContent, NEmpty, NTooltip } from 'naive-ui'
 import type { CalendarEvent } from '@/types'
-import { openExternal } from '@/wails'
-
-interface DescriptionSegment {
-  type: 'text' | 'url'
-  value: string
-  href?: string
-}
+import EventDescription from './EventDescription.vue'
 
 const props = defineProps<{
   show: boolean
@@ -24,6 +18,7 @@ const emit = defineEmits<{
   (event: 'edit', calendarEvent: CalendarEvent): void
   (event: 'toggle-side'): void
   (event: 'open-email', sourceURL: string): void
+  (event: 'open-board', date: string): void
 }>()
 
 const formattedDate = computed(() => {
@@ -47,31 +42,6 @@ function eventTime(event: CalendarEvent): string {
   return startLabel === endLabel ? startLabel : `${startLabel}–${endLabel}`
 }
 
-function parseDescription(text: string): DescriptionSegment[] {
-  const urlPattern = /(https?:\/\/[^\s]+|catendar:\/\/[^\s]+|www\.[^\s]+)/gi
-  const segments: DescriptionSegment[] = []
-  let previousIndex = 0
-
-  for (const match of text.matchAll(urlPattern)) {
-    const index = match.index ?? 0
-    if (index > previousIndex) {
-      segments.push({ type: 'text', value: text.slice(previousIndex, index) })
-    }
-    const value = match[0]
-    segments.push({
-      type: 'url',
-      value,
-      href: value.startsWith('www.') ? `https://${value}` : value
-    })
-    previousIndex = index + value.length
-  }
-
-  if (previousIndex < text.length) {
-    segments.push({ type: 'text', value: text.slice(previousIndex) })
-  }
-  return segments
-}
-
 function editEvent(event: CalendarEvent) {
   emit('edit', event)
 }
@@ -80,14 +50,6 @@ function handleEventKeydown(event: KeyboardEvent, calendarEvent: CalendarEvent) 
   if (event.key !== 'Enter' && event.key !== ' ') return
   event.preventDefault()
   editEvent(calendarEvent)
-}
-
-function openLink(url: string) {
-  if (url.startsWith('catendar://email/')) {
-    emit('open-email', url)
-    return
-  }
-  openExternal(url)
 }
 </script>
 
@@ -107,23 +69,41 @@ function openLink(url: string) {
             <span class="drawer-kicker">Day plan</span>
             <h2>{{ formattedDate }}</h2>
           </div>
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button
-                quaternary
-                circle
-                size="small"
-                :aria-label="drawerSide === 'left' ? 'Move panel to the right' : 'Move panel to the left'"
-                @click="emit('toggle-side')"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true">
-                  <path v-if="drawerSide === 'left'" d="M4 4h12v12H4zM11 7l3 3-3 3M6 10h8" />
-                  <path v-else d="M4 4h12v12H4zM9 7l-3 3 3 3M6 10h8" />
-                </svg>
-              </n-button>
-            </template>
-            {{ drawerSide === 'left' ? 'Move panel right' : 'Move panel left' }}
-          </n-tooltip>
+          <div class="drawer-actions">
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button
+                  quaternary
+                  circle
+                  size="small"
+                  aria-label="Open in Board"
+                  @click="emit('open-board', date)"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path d="M3 4h14v12H3zM7.7 4v12M12.3 4v12" />
+                  </svg>
+                </n-button>
+              </template>
+              Open in Board
+            </n-tooltip>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button
+                  quaternary
+                  circle
+                  size="small"
+                  :aria-label="drawerSide === 'left' ? 'Move panel to the right' : 'Move panel to the left'"
+                  @click="emit('toggle-side')"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path v-if="drawerSide === 'left'" d="M4 4h12v12H4zM11 7l3 3-3 3M6 10h8" />
+                    <path v-else d="M4 4h12v12H4zM9 7l-3 3 3 3M6 10h8" />
+                  </svg>
+                </n-button>
+              </template>
+              {{ drawerSide === 'left' ? 'Move panel right' : 'Move panel left' }}
+            </n-tooltip>
+          </div>
         </div>
       </template>
 
@@ -152,16 +132,12 @@ function openLink(url: string) {
                 <span v-if="event.bold" class="emphasis-label">Emphasized</span>
               </div>
               <h3 :class="{ bold: event.bold }">{{ event.title }}</h3>
-              <p v-if="event.description" class="event-description">
-                <template v-for="(segment, index) in parseDescription(event.description)" :key="index">
-                  <a
-                    v-if="segment.type === 'url'"
-                    :href="segment.href"
-                    @click.stop.prevent="openLink(segment.href!)"
-                  >{{ segment.value }}</a>
-                  <span v-else>{{ segment.value }}</span>
-                </template>
-              </p>
+              <event-description
+                v-if="event.description"
+                class="event-description"
+                :text="event.description"
+                @open-email="sourceURL => emit('open-email', sourceURL)"
+              />
             </div>
             <span class="edit-hint" aria-hidden="true">
               <svg viewBox="0 0 20 20"><path d="m12.8 4.2 3 3L7.5 15.5 4 16l.5-3.5 8.3-8.3Z" /></svg>
@@ -189,6 +165,12 @@ function openLink(url: string) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .drawer-kicker {

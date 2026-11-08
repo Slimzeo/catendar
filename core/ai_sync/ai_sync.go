@@ -97,7 +97,7 @@ func (s *Service) Start(parent context.Context) (Status, error) {
 		return s.status, errors.New("AI Sync is already running")
 	}
 	if s.executablePath == "" {
-		return s.status, errors.New("CATendar executable path is unavailable")
+		return s.status, errors.New("catendar executable path is unavailable")
 	}
 
 	runID, err := newRunID()

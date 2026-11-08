@@ -8,4 +8,6 @@ export function DeleteEvent(arg1:number):Promise<void>;
 
 export function GetEvents(arg1:string,arg2:string):Promise<Array<calendar.Event>>;
 
+export function SetEventPhase(arg1:number,arg2:string):Promise<calendar.Event>;
+
 export function UpdateEvent(arg1:number,arg2:calendar.EventInput):Promise<calendar.Event>;

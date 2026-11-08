@@ -1,18 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
-import { NButton, NCard, NDatePicker, NInput, NModal, NPopconfirm, NSwitch } from 'naive-ui'
-import type { CalendarEvent, EventInput } from '@/types'
+import { NButton, NCard, NDatePicker, NInput, NModal, NPopconfirm, NSelect, NSwitch } from 'naive-ui'
+import type { CalendarEvent, EventInput, EventPhase } from '@/types'
+import { eventPhases } from '@/constants/eventPhases'
 import ColorPalettePicker from './ColorPalettePicker.vue'
 
 const props = withDefaults(defineProps<{
   show: boolean
   event?: CalendarEvent | null
   defaultDate?: string
+  defaultTitle?: string
+  defaultPhase?: EventPhase
+  variant?: 'board' | 'calendar'
   saving?: boolean
 }>(), {
   event: null,
   defaultDate: '',
+  defaultTitle: '',
+  defaultPhase: 'todo',
+  variant: 'calendar',
   saving: false
 })
 
@@ -28,12 +35,41 @@ const description = ref('')
 const startDate = ref<number | null>(null)
 const startTime = ref('09:00')
 const endTime = ref('10:00')
+const endDate = ref('')
 const allDay = ref(true)
 const selectedColor = ref('#7663b5')
 const bold = ref(false)
+const phase = ref<EventPhase>('todo')
+const deadline = ref('')
 const formError = ref('')
+const titleError = ref('')
+const showCalendarDetails = ref(false)
+let initializing = false
+
+const phaseOptions = eventPhases.map(value => ({ label: value, value }))
 
 const isEditing = computed(() => Boolean(props.event?.id))
+const isTask = computed(() => props.variant === 'board')
+const modalTitle = computed(() => {
+  if (isTask.value) return isEditing.value ? 'Edit task' : 'New task'
+  return isEditing.value ? 'Edit event' : 'New event'
+})
+const titlePlaceholder = computed(() => (isTask.value ? 'Task title' : 'Event title'))
+const submitLabel = computed(() => {
+  if (isTask.value) return isEditing.value ? 'Save task' : 'Create task'
+  return isEditing.value ? 'Save changes' : 'Create event'
+})
+const deletePrompt = computed(
+  () => `Delete this ${isTask.value ? 'task' : 'event'}? This cannot be undone.`
+)
+
+watch(startDate, (value, previousValue) => {
+  if (initializing || !value) return
+  const previousDate = previousValue ? format(new Date(previousValue), 'yyyy-MM-dd') : ''
+  if (!endDate.value || endDate.value === previousDate) {
+    endDate.value = format(new Date(value), 'yyyy-MM-dd')
+  }
+}, { flush: 'sync' })
 
 watch(
   () => props.show,
@@ -47,59 +83,90 @@ watch(
 
 function initializeForm() {
   formError.value = ''
+  titleError.value = ''
+  showCalendarDetails.value = false
+  initializing = true
 
-  if (props.event) {
-    const start = parseISO(props.event.start)
-    const end = props.event.end ? parseISO(props.event.end) : null
-    title.value = props.event.title
-    description.value = props.event.description || ''
-    startDate.value = start.getTime()
-    startTime.value = format(start, 'HH:mm')
-    endTime.value = end ? format(end, 'HH:mm') : ''
-    allDay.value = props.event.allDay
-    selectedColor.value = props.event.color
-    bold.value = props.event.bold
-    return
+  try {
+    if (props.event) {
+      const start = parseISO(props.event.start)
+      const end = props.event.end ? parseISO(props.event.end) : null
+      title.value = props.event.title
+      description.value = props.event.description || ''
+      startDate.value = start.getTime()
+      startTime.value = format(start, 'HH:mm')
+      endTime.value = end ? format(end, 'HH:mm') : ''
+      endDate.value = end ? format(end, 'yyyy-MM-dd') : format(start, 'yyyy-MM-dd')
+      allDay.value = props.event.allDay
+      selectedColor.value = props.event.color
+      bold.value = props.event.bold
+      phase.value = props.event.phase || props.defaultPhase
+      deadline.value = props.event.deadline || ''
+      return
+    }
+
+    const date = props.defaultDate ? parseISO(props.defaultDate) : new Date()
+    title.value = props.defaultTitle
+    description.value = ''
+    startDate.value = date.getTime()
+    startTime.value = '09:00'
+    endTime.value = '10:00'
+    endDate.value = format(date, 'yyyy-MM-dd')
+    allDay.value = true
+    selectedColor.value = '#7663b5'
+    bold.value = false
+    phase.value = props.defaultPhase
+    deadline.value = ''
+  } finally {
+    initializing = false
   }
-
-  title.value = ''
-  description.value = ''
-  startDate.value = props.defaultDate ? parseISO(props.defaultDate).getTime() : Date.now()
-  startTime.value = '09:00'
-  endTime.value = '10:00'
-  allDay.value = true
-  selectedColor.value = '#7663b5'
-  bold.value = false
 }
 
 function handleSave() {
   const trimmedTitle = title.value.trim()
+  formError.value = ''
+  titleError.value = ''
   if (!trimmedTitle) {
-    formError.value = 'Add a title before saving.'
+    titleError.value = isTask.value
+      ? 'Add a task title before saving.'
+      : 'Add a title before saving.'
     titleInputRef.value?.focus()
     return
   }
   if (!startDate.value) {
     formError.value = 'Choose a date before saving.'
+    showCalendarDetails.value = true
     return
   }
   if (!allDay.value && !startTime.value) {
     formError.value = 'Choose a start time.'
-    return
-  }
-  if (!allDay.value && endTime.value && endTime.value <= startTime.value) {
-    formError.value = 'End time must be later than start time.'
+    showCalendarDetails.value = true
     return
   }
 
-  formError.value = ''
+  const trimmedDeadline = deadline.value.trim()
+  if (trimmedDeadline && !/^\d{4}-\d{2}-\d{2}$/.test(trimmedDeadline)) {
+    formError.value = 'Use YYYY-MM-DD for the deadline.'
+    return
+  }
+
   const date = format(new Date(startDate.value), 'yyyy-MM-dd')
   const start = allDay.value ? `${date}T00:00:00` : `${date}T${startTime.value}:00`
-  const end = allDay.value
-    ? start
-    : endTime.value
-      ? `${date}T${endTime.value}:00`
-      : start
+  let end = start
+
+  if (allDay.value) {
+    const endDateValue = endDate.value && endDate.value >= date ? endDate.value : date
+    end = `${endDateValue}T00:00:00`
+  } else {
+    const endDateValue = endDate.value && endDate.value > date ? endDate.value : date
+    const endTimeValue = endTime.value || startTime.value
+    end = `${endDateValue}T${endTimeValue}:00`
+    if (end < start) {
+      formError.value = 'End must not be earlier than start.'
+      showCalendarDetails.value = true
+      return
+    }
+  }
 
   emit('save', {
     title: trimmedTitle,
@@ -108,7 +175,9 @@ function handleSave() {
     end,
     allDay: allDay.value,
     color: selectedColor.value,
-    bold: bold.value
+    bold: bold.value,
+    phase: phase.value,
+    deadline: trimmedDeadline
   })
 }
 
@@ -121,7 +190,8 @@ function handleDelete() {
   <n-modal :show="show" :mask-closable="!saving" @update:show="value => emit('update:show', value)">
     <n-card
       class="event-card"
-      :title="isEditing ? 'Edit event' : 'New event'"
+      :class="{ 'task-panel': isTask }"
+      :title="modalTitle"
       :bordered="false"
       closable
       :closable-disabled="saving"
@@ -130,7 +200,7 @@ function handleDelete() {
       <form class="event-form" @submit.prevent="handleSave">
         <div class="form-group">
           <div class="label-row">
-            <label>Title</label>
+            <label for="event-title">Title</label>
             <button
               type="button"
               class="bold-button"
@@ -145,57 +215,128 @@ function handleDelete() {
           <n-input
             ref="titleInputRef"
             v-model:value="title"
-            placeholder="Event title"
+            :input-props="{
+              id: 'event-title',
+              'aria-invalid': titleError ? 'true' : undefined,
+              'aria-describedby': titleError ? 'event-title-error' : undefined
+            }"
+            :placeholder="titlePlaceholder"
             size="large"
             :disabled="saving"
-            @input="formError = ''"
+            @input="titleError = ''; formError = ''"
           />
-        </div>
-
-        <div class="form-row date-row">
-          <div class="form-group date-field">
-            <label>Date</label>
-            <n-date-picker
-              v-model:value="startDate"
-              type="date"
-              :disabled="saving"
-              style="width: 100%"
-            />
-          </div>
-          <label class="all-day-control">
-            <span>
-              <strong>All day</strong>
-              <small>Hide start and end times</small>
-            </span>
-            <n-switch v-model:value="allDay" :disabled="saving" />
-          </label>
-        </div>
-
-        <div v-if="!allDay" class="form-row time-row">
-          <div class="form-group">
-            <label for="event-start-time">Start time</label>
-            <input id="event-start-time" v-model="startTime" type="time" class="time-input" :disabled="saving" />
-          </div>
-          <div class="form-group">
-            <label for="event-end-time">End time <span class="optional">Optional</span></label>
-            <input id="event-end-time" v-model="endTime" type="time" class="time-input" :disabled="saving" />
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>Color</label>
-          <color-palette-picker v-model="selectedColor" />
+          <p v-if="titleError" id="event-title-error" class="field-error" role="alert">
+            {{ titleError }}
+          </p>
         </div>
 
         <div class="form-group description-field">
-          <label>Description <span class="optional">Links are clickable</span></label>
+          <label for="event-description">
+            Description
+            <span class="optional">{{ isTask ? 'Optional' : 'Links are clickable' }}</span>
+          </label>
           <n-input
             v-model:value="description"
             type="textarea"
+            :textarea-props="{ id: 'event-description' }"
             placeholder="Notes, location, or meeting link"
             :rows="3"
             :disabled="saving"
           />
+        </div>
+
+        <div class="form-row phase-row">
+          <div class="form-group deadline-field">
+            <label for="event-deadline">Deadline <span class="optional">Optional</span></label>
+            <div class="deadline-control">
+              <input
+                id="event-deadline"
+                v-model="deadline"
+                type="date"
+                class="time-input date-input"
+                aria-label="Deadline"
+                :disabled="saving"
+              />
+              <button
+                v-if="deadline"
+                type="button"
+                class="clear-deadline"
+                :disabled="saving"
+                aria-label="Clear deadline"
+                @click="deadline = ''"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="form-group phase-field">
+            <label>Phase</label>
+            <n-select
+              v-model:value="phase"
+              :options="phaseOptions"
+              :disabled="saving"
+              aria-label="Phase"
+            />
+          </div>
+        </div>
+
+        <div class="calendar-details">
+          <button
+            v-if="isTask"
+            type="button"
+            class="details-toggle"
+            :aria-expanded="showCalendarDetails"
+            aria-controls="event-calendar-details"
+            @click="showCalendarDetails = !showCalendarDetails"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
+            Calendar details
+          </button>
+
+          <div
+            v-show="!isTask || showCalendarDetails"
+            id="event-calendar-details"
+            class="calendar-details-body"
+          >
+            <div class="form-row date-row">
+              <div class="form-group date-field">
+                <label>Date</label>
+                <n-date-picker
+                  v-model:value="startDate"
+                  type="date"
+                  :disabled="saving"
+                  style="width: 100%"
+                />
+              </div>
+              <label class="all-day-control">
+                <span>
+                  <strong>All day</strong>
+                  <small>Hide start and end times</small>
+                </span>
+                <n-switch v-model:value="allDay" :disabled="saving" />
+              </label>
+            </div>
+
+            <div v-if="!allDay" class="form-row time-row">
+              <div class="form-group">
+                <label for="event-start-time">Start time</label>
+                <input id="event-start-time" v-model="startTime" type="time" class="time-input" :disabled="saving" />
+              </div>
+              <div class="form-group">
+                <label for="event-end-time">End time <span class="optional">Optional</span></label>
+                <input id="event-end-time" v-model="endTime" type="time" class="time-input" :disabled="saving" />
+              </div>
+              <div class="form-group">
+                <label for="event-end-date">End date</label>
+                <input id="event-end-date" v-model="endDate" type="date" class="time-input date-input" :disabled="saving" />
+              </div>
+            </div>
+
+            <div class="form-group color-field">
+              <label>Color</label>
+              <color-palette-picker v-model="selectedColor" />
+            </div>
+          </div>
         </div>
 
         <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
@@ -205,14 +346,14 @@ function handleDelete() {
             <template #trigger>
               <n-button type="error" ghost :disabled="saving">Delete</n-button>
             </template>
-            Delete this event? This cannot be undone.
+            {{ deletePrompt }}
           </n-popconfirm>
           <span v-else />
 
           <div class="primary-actions">
             <n-button :disabled="saving" @click="emit('update:show', false)">Cancel</n-button>
             <n-button type="primary" attr-type="submit" :loading="saving">
-              {{ isEditing ? 'Save changes' : 'Create event' }}
+              {{ submitLabel }}
             </n-button>
           </div>
         </footer>
@@ -225,10 +366,32 @@ function handleDelete() {
 .event-card {
   width: min(520px, calc(100vw - 28px));
   max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+
+.task-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  width: min(440px, calc(100vw - 24px));
+  max-height: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.event-card :deep(.n-card-header) {
+  flex: 0 0 auto;
+  padding: 14px 18px 10px;
 }
 
 .event-card :deep(.n-card__content) {
+  min-height: 0;
+  padding: 0 18px 18px;
+  flex: 1 1 auto;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .event-form {
@@ -304,6 +467,48 @@ function handleDelete() {
   flex: 1;
 }
 
+.phase-row {
+  align-items: flex-end;
+}
+
+.phase-field {
+  flex: 0 0 150px !important;
+}
+
+.deadline-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.deadline-control .date-input {
+  flex: 1;
+}
+
+.clear-deadline {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.clear-deadline:hover,
+.clear-deadline:focus-visible {
+  border-color: var(--primary-color);
+  background: var(--primary-muted);
+  color: var(--primary-color);
+}
+
+.clear-deadline:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
 .date-row {
   align-items: center;
 }
@@ -376,7 +581,70 @@ function handleDelete() {
 }
 
 .description-field {
-  margin-bottom: 10px;
+  margin-bottom: 17px;
+}
+
+.field-error {
+  margin: 6px 0 0;
+  color: var(--danger-color);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.calendar-details {
+  margin-bottom: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.details-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.details-toggle:hover,
+.details-toggle:focus-visible {
+  color: var(--text-primary);
+}
+
+.details-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.details-toggle svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  transition: transform 140ms ease;
+}
+
+.details-toggle[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+
+.calendar-details-body {
+  padding-top: 12px;
+}
+
+.color-field {
+  margin-bottom: 0;
 }
 
 .form-error {
@@ -401,10 +669,34 @@ function handleDelete() {
   gap: 8px;
 }
 
+@media (max-width: 640px) {
+  .task-panel {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .event-card :deep(.n-card-header) {
+    padding: 12px 16px 8px;
+  }
+
+  .event-card :deep(.n-card__content) {
+    padding: 0 16px 16px;
+  }
+}
+
 @media (max-width: 520px) {
   .form-row {
     flex-direction: column;
     gap: 0;
+  }
+
+  .phase-field {
+    flex: 1 !important;
   }
 
   .all-day-control {

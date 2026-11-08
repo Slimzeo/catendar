@@ -173,7 +173,7 @@ func call(ctx context.Context, command string, payload any) (Response, error) {
 	directory := os.Getenv(EnvSessionDir)
 	token := os.Getenv(EnvSessionToken)
 	if directory == "" || token == "" {
-		return Response{}, errors.New("CATendar AI Sync session is not available")
+		return Response{}, errors.New("catendar AI Sync session is not available")
 	}
 
 	id, err := randomID()
@@ -210,7 +210,7 @@ func call(ctx context.Context, command string, payload any) (Response, error) {
 		case <-ctx.Done():
 			return Response{}, ctx.Err()
 		case <-deadline.C:
-			return Response{}, errors.New("CATendar Core did not answer the CLI request")
+			return Response{}, errors.New("catendar Core did not answer the CLI request")
 		case <-ticker.C:
 			data, err := os.ReadFile(responsePath)
 			if errors.Is(err, os.ErrNotExist) {
@@ -232,7 +232,7 @@ func call(ctx context.Context, command string, payload any) (Response, error) {
 func sessionFile(value string) (string, error) {
 	directory := os.Getenv(EnvSessionDir)
 	if directory == "" {
-		return "", errors.New("CATendar AI Sync session is not available")
+		return "", errors.New("catendar AI Sync session is not available")
 	}
 	path := value
 	if !filepath.IsAbs(path) {
@@ -274,11 +274,11 @@ func randomID() (string, error) {
 }
 
 func printUsage(writer io.Writer) {
-	fmt.Fprintln(writer, `CATendar AI Sync CLI
+	fmt.Fprintln(writer, `catendar AI Sync CLI
 
 Commands:
-  CATendar cli email list [--cursor N] [--limit N]
-  CATendar cli email read --ids ID,ID
-  CATendar cli calendar list --from YYYY-MM-DD --to YYYY-MM-DD
-  CATendar cli calendar batch-upsert --input events.json`)
+  catendar cli email list [--cursor N] [--limit N]
+  catendar cli email read --ids ID,ID
+  catendar cli calendar list --from YYYY-MM-DD --to YYYY-MM-DD
+  catendar cli calendar batch-upsert --input events.json`)
 }

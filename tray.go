@@ -26,10 +26,10 @@ func hideWindowOnClose() bool {
 
 func onSystrayReady() {
 	systray.SetIcon(trayIcon)
-	systray.SetTitle("CATendar")
+	systray.SetTitle("catendar")
 
-	showItem := systray.AddMenuItem("Show Window", "Show CATendar window")
-	quitItem := systray.AddMenuItem("Quit", "Exit CATendar")
+	showItem := systray.AddMenuItem("Show Window", "Show catendar window")
+	quitItem := systray.AddMenuItem("Quit", "Exit catendar")
 
 	go func() {
 		for {
