@@ -14,6 +14,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 var appCtx context.Context
@@ -61,6 +62,9 @@ func main() {
 		MinWidth:          360,
 		MinHeight:         280,
 		AssetServer:       &assetserver.Options{Assets: frontendAssets},
+		Mac: &mac.Options{
+			TitleBar: mac.TitleBarHiddenInset(),
+		},
 		HideWindowOnClose: hideWindowOnClose(),
 		OnStartup: func(ctx context.Context) {
 			appCtx = ctx

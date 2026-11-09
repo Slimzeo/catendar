@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { useSyncSourcesStore } from '@/stores/syncSources'
-import { computed, ref } from 'vue'
-import { NButton, NTooltip } from 'naive-ui'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { NButton, NDropdown, NTooltip } from 'naive-ui'
 import type { AISyncState } from '@/types'
 import type { CalendarView } from '@/stores/calendar'
 import { useCalendarStore } from '@/stores/calendar'
 import { useThemeStore } from '@/stores/theme'
-import { setAlwaysOnTop } from '@/wails'
+import { detectNativeMac, setAlwaysOnTop } from '@/wails'
 
 const props = withDefaults(defineProps<{
   conversationState?: AISyncState
@@ -22,11 +22,30 @@ const emit = defineEmits<{
   (event: 'create'): void
   (event: 'ai-sync'): void
   (event: 'settings'): void
+  (event: 'menu-open', open: boolean): void
 }>()
 
 const calendarStore = useCalendarStore()
 const themeStore = useThemeStore()
 const isPinned = ref(false)
+const isNativeMac = ref(false)
+
+const compactQuery = window.matchMedia('(max-width: 720px)')
+const narrow = ref(compactQuery.matches)
+const compactMac = computed(() => isNativeMac.value && narrow.value)
+const menuOpen = ref(false)
+
+function updateWidth() {
+  narrow.value = compactQuery.matches
+  if (!narrow.value) menuOpen.value = false
+}
+
+onMounted(async () => {
+  compactQuery.addEventListener('change', updateWidth)
+  isNativeMac.value = await detectNativeMac()
+})
+onBeforeUnmount(() => compactQuery.removeEventListener('change', updateWidth))
+watch(menuOpen, open => emit('menu-open', open), { flush: 'sync' })
 
 const periodLabel = computed(() => (
   calendarStore.viewMode === 'board' ? calendarStore.dayLabel : calendarStore.monthLabel
@@ -52,6 +71,19 @@ const aiSyncLabel = computed(() => {
   if (aiSyncBusy.value) return 'AI Sync — syncing'
   return 'AI Sync — sync Codex conversations'
 })
+const overflowOptions = computed(() => [
+  { key: 'today', label: 'Today', disabled: isAtToday.value, run: () => calendarStore.goToToday() },
+  ...(calendarStore.viewMode === 'month' ? [
+    { key: 'create', label: 'New event', run: () => emit('create') }
+  ] : []),
+  ...(sources.active.codex || sources.active.email ? [
+    { key: 'ai-sync', label: pendingReviews.value || aiSyncBusy.value ? aiSyncLabel.value : 'AI Sync', run: () => emit('ai-sync') }
+  ] : []),
+  { key: 'show-time', label: themeStore.showTime ? 'Hide event times' : 'Show event times', run: () => themeStore.toggleShowTime() },
+  { key: 'pin', label: isPinned.value ? 'Stop keeping on top' : 'Keep window on top', run: togglePin },
+  { key: 'theme', label: themeStore.isDark ? 'Use light theme' : 'Use dark theme', run: () => themeStore.toggleTheme() },
+  { key: 'settings', label: 'Settings', run: () => emit('settings') }
+])
 
 function switchView(view: CalendarView) {
   calendarStore.setView(view)
@@ -63,10 +95,15 @@ function togglePin() {
     isPinned.value = nextState
   }
 }
+
+function handleOverflowSelect(key: string) {
+  overflowOptions.value.find(option => option.key === key)?.run()
+}
+
 </script>
 
 <template>
-  <header class="toolbar">
+  <header class="toolbar" :class="{ 'native-mac': isNativeMac }">
     <button class="brand" type="button" title="Go to today" aria-label="Go to today" @click="calendarStore.goToToday">
       <img src="/catendar.png" alt="" />
       <span class="brand-name"><strong>cat</strong>endar</span>
@@ -107,7 +144,7 @@ function togglePin() {
       </n-button>
     </nav>
 
-    <div class="toolbar-actions">
+    <div v-if="!compactMac" class="toolbar-actions">
       <n-button
         v-if="sources.active.codex || sources.active.email"
         secondary
@@ -231,6 +268,34 @@ function togglePin() {
         </template>
         Settings
       </n-tooltip>
+    </div>
+    <div v-else class="toolbar-actions">
+      <n-dropdown
+        v-model:show="menuOpen"
+        trigger="click"
+        placement="bottom-end"
+        :options="overflowOptions"
+        :menu-props="() => ({ role: 'menu', 'aria-label': 'Toolbar actions' })"
+        :node-props="option => ({ role: 'menuitem', 'aria-disabled': option.disabled ? 'true' : 'false' })"
+        @select="handleOverflowSelect"
+      >
+        <n-button
+          quaternary
+          circle
+          size="small"
+          class="overflow-button"
+          aria-label="More toolbar actions"
+          aria-haspopup="menu"
+          :aria-expanded="menuOpen"
+          title="More actions"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="4" cy="10" r="1.2" />
+            <circle cx="10" cy="10" r="1.2" />
+            <circle cx="16" cy="10" r="1.2" />
+          </svg>
+        </n-button>
+      </n-dropdown>
     </div>
   </header>
 </template>
@@ -501,5 +566,55 @@ function togglePin() {
   .today-button {
     font-size: 12px;
   }
+}
+
+/* AppKit's inset window buttons sit in the first 80 pt, centered 26 pt from the top. */
+.toolbar.native-mac {
+  --wails-draggable: drag;
+  min-height: 52px;
+  padding: 6px 12px 6px 94px;
+  gap: 10px;
+}
+
+.native-mac :deep(button) {
+  --wails-draggable: no-drag;
+}
+
+.native-mac .brand-name { display: none; }
+.overflow-button circle { fill: currentColor; stroke: none; }
+
+@media (min-width: 721px) and (max-width: 860px) {
+  .native-mac .calendar-label { min-width: 112px; }
+  .native-mac .today-button { display: none; }
+}
+
+@media (max-width: 720px) {
+  .toolbar.native-mac {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px;
+    padding-right: 8px;
+  }
+  .native-mac .calendar-nav {
+    grid-area: auto;
+    width: auto;
+    justify-self: center;
+    gap: 2px;
+  }
+  .native-mac .calendar-label { min-width: 0; }
+  .native-mac .today-button { display: none; }
+}
+
+@media (max-width: 480px) {
+  .toolbar.native-mac {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-inline: 86px 6px;
+    gap: 2px;
+  }
+  .native-mac .brand { display: none; }
+  .native-mac .calendar-nav { gap: 0; }
+  .native-mac .view-switch { margin-right: 2px; }
+  .native-mac .view-switch button { padding-inline: 5px; }
+  .native-mac .calendar-label { margin-inline: 2px; font-size: 13px; }
+  .native-mac :deep(.n-button) { min-width: 26px; }
 }
 </style>

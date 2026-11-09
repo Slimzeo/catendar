@@ -29,6 +29,7 @@ const eventsStore = useEventsStore()
 const conversationStore = useConversationSyncStore()
 const message = useMessage()
 
+const toolbarMenuOpen = ref(false)
 const showEventModal = ref(false)
 const editingEvent = ref<CalendarEvent | null>(null)
 const defaultDate = ref('')
@@ -292,7 +293,8 @@ function wrapBoardTab(event: KeyboardEvent) {
   const controls = event.target.closest('.board')?.querySelectorAll('button:enabled, input:enabled, a[href]')
   if (!controls || controls[controls.length - 1] !== event.target) return
   // Leaving the webview would lose the rest of a held Tab chord on the last card or empty column.
-  const toolbar = (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('.toolbar button')
+  const toolbar = Array.from((event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('.toolbar button:enabled'))
+    .find(button => button.getClientRects().length > 0)
   if (toolbar) {
     event.preventDefault()
     toolbar.focus()
@@ -300,6 +302,7 @@ function wrapBoardTab(event: KeyboardEvent) {
 }
 
 function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin: EventTarget | null): boolean {
+  if (toolbarMenuOpen.value) return false
   if (otherDialogOpen.value) {
     if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
     if (showSettings.value) return settingsModal.value?.dismiss() ?? false
@@ -414,6 +417,7 @@ onUnmounted(() => {
       @create="openCreateModal()"
       @ai-sync="openAISync"
       @settings="openSettings('shortcuts')"
+      @menu-open="toolbarMenuOpen = $event"
     />
 
     <transition name="sync-status">
