@@ -1,11 +1,14 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"catendar-wails/core/calendar"
 )
 
 func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testing.T) {
@@ -46,7 +49,7 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 	}
 	for _, column := range []string{
 		"description", "result", "bold", "phase", "deadline", "source_type",
-		"source_account_id", "source_message_id", "source_url", "workspace_id",
+		"source_account_id", "source_message_id", "source_url",
 	} {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = ?", column).Scan(&count); err != nil {
@@ -73,26 +76,6 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 	if phase != "todo" || deadline != "" || result != "" {
 		db.Close()
 		t.Fatalf("legacy row defaults = phase %q deadline %q result %q", phase, deadline, result)
-	}
-	var workspaceID int64
-	if err := db.QueryRow("SELECT workspace_id FROM events WHERE id = 1").Scan(&workspaceID); err != nil {
-		db.Close()
-		t.Fatalf("read legacy workspace: %v", err)
-	}
-	if workspaceID != 1 {
-		db.Close()
-		t.Fatalf("legacy workspace = %d, want Daily Routine", workspaceID)
-	}
-	for id, want := range map[int64]string{1: "Daily Routine", 2: "Seekino", 3: "个人 IP 打造"} {
-		var name string
-		if err := db.QueryRow("SELECT name FROM workspaces WHERE id = ?", id).Scan(&name); err != nil {
-			db.Close()
-			t.Fatalf("read workspace %d: %v", id, err)
-		}
-		if name != want {
-			db.Close()
-			t.Fatalf("workspace %d = %q, want %q", id, name, want)
-		}
 	}
 
 	const migratedResult = "迁移后\n保留结果"
@@ -134,26 +117,24 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 	if phase != "todo" || deadline != "" || result != migratedResult {
 		t.Fatalf("legacy row changed after reopen: phase=%q deadline=%q result=%q", phase, deadline, result)
 	}
-	var reopenedWorkspace int64
-	if err := reopened.QueryRow("SELECT workspace_id FROM events WHERE id = 1").Scan(&reopenedWorkspace); err != nil {
-		t.Fatalf("read workspace after reopen: %v", err)
-	}
-	if reopenedWorkspace != 1 {
-		t.Fatalf("workspace after reopen = %d, want Daily Routine", reopenedWorkspace)
-	}
-	var workspaceCount int
-	if err := reopened.QueryRow("SELECT COUNT(*) FROM workspaces").Scan(&workspaceCount); err != nil {
-		t.Fatalf("count workspaces after reopen: %v", err)
-	}
-	if workspaceCount != 3 {
-		t.Fatalf("workspace count after reopen = %d, want 3", workspaceCount)
-	}
 	var eventCount int
 	if err := reopened.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil {
 		t.Fatalf("count events after reopen: %v", err)
 	}
 	if eventCount != 1 {
 		t.Fatalf("event count after reopen = %d, want 1", eventCount)
+	}
+	var workspaceTable int
+	if err := reopened.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+	).Scan(&workspaceTable); err != nil || workspaceTable != 0 {
+		t.Fatalf("fresh database workspace table = %d err=%v", workspaceTable, err)
+	}
+	var workspaceColumn int
+	if err := reopened.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'workspace_id'",
+	).Scan(&workspaceColumn); err != nil || workspaceColumn != 0 {
+		t.Fatalf("fresh database workspace column = %d err=%v", workspaceColumn, err)
 	}
 }
 
@@ -298,13 +279,25 @@ func TestOpenDatabaseSeedsBoardDaysForRecentWorkOnly(t *testing.T) {
 	}
 }
 
-func TestOpenDatabaseMigratesExistingBoardAndWorkspacesBeforeSeedMarker(t *testing.T) {
+func TestOpenDatabaseKeepsLegacyWorkspaceCardsAndReviewsWorking(t *testing.T) {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	path := filepath.Join(t.TempDir(), "calendar.db")
 	legacy, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open legacy database: %v", err)
 	}
 	if _, err := legacy.Exec(`
+		CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			hint TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO workspaces (id, name, hint) VALUES
+			(1, 'Daily Routine', ''),
+			(2, 'Seekino', ''),
+			(3, '个人 IP 打造', '');
 		CREATE TABLE events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			title TEXT NOT NULL,
@@ -312,6 +305,16 @@ func TestOpenDatabaseMigratesExistingBoardAndWorkspacesBeforeSeedMarker(t *testi
 			end TEXT,
 			color TEXT NOT NULL,
 			all_day INTEGER NOT NULL DEFAULT 1,
+			description TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			bold INTEGER NOT NULL DEFAULT 0,
+			phase TEXT NOT NULL DEFAULT 'todo',
+			deadline TEXT NOT NULL DEFAULT '',
+			source_type TEXT NOT NULL DEFAULT '',
+			source_account_id TEXT NOT NULL DEFAULT '',
+			source_message_id TEXT NOT NULL DEFAULT '',
+			source_url TEXT NOT NULL DEFAULT '',
+			workspace_id INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -321,93 +324,183 @@ func TestOpenDatabaseMigratesExistingBoardAndWorkspacesBeforeSeedMarker(t *testi
 			title TEXT NOT NULL, start TEXT NOT NULL, end TEXT, color TEXT NOT NULL,
 			all_day INTEGER NOT NULL, description TEXT NOT NULL, result TEXT NOT NULL,
 			bold INTEGER NOT NULL, phase TEXT NOT NULL, deadline TEXT NOT NULL,
+			workspace_id INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME, updated_at DATETIME,
 			PRIMARY KEY (event_id, day)
 		);
 		CREATE TABLE board_meta (
 			id INTEGER PRIMARY KEY CHECK (id = 1), seeded_at DATETIME NOT NULL
 		);
+		CREATE TABLE chat_activities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			day TEXT NOT NULL,
+			state TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			before_phase TEXT NOT NULL DEFAULT '',
+			source_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL DEFAULT '',
+			thread_title TEXT NOT NULL DEFAULT '',
+			source_at INTEGER NOT NULL DEFAULT 0,
+			quote TEXT NOT NULL DEFAULT '',
+			task_key TEXT NOT NULL,
+			event_id INTEGER NOT NULL DEFAULT 0,
+			workspace_id INTEGER NOT NULL DEFAULT 0,
+			title TEXT NOT NULL,
+			phase TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			needs_review INTEGER NOT NULL DEFAULT 0,
+			base_updated TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			resolved_at DATETIME
+		);
 	`); err != nil {
 		legacy.Close()
 		t.Fatalf("create legacy board schema: %v", err)
 	}
-	insert, err := legacy.Exec(`
-		INSERT INTO events (title, start, end, color, all_day, created_at, updated_at)
-		VALUES ('Existing task', '2026-03-02T00:00:00', '2026-03-02T00:00:00', '#7663b5', 1,
-			'2026-03-02 00:10:00', '2026-03-02 00:10:00')
-	`)
-	if err != nil {
-		legacy.Close()
-		t.Fatalf("insert legacy event: %v", err)
+	insertEvent := func(title, start, phase, result string, workspaceID int64) int64 {
+		t.Helper()
+		insert, err := legacy.Exec(`
+			INSERT INTO events (
+				title, start, end, color, all_day, description, result, bold, phase, deadline,
+				workspace_id, created_at, updated_at
+			) VALUES (?, ?, ?, '#7663b5', 1, '', ?, 0, ?, '', ?, '2026-03-02 00:10:00', '2026-03-02 00:10:00')
+		`, title, start, start, result, phase, workspaceID)
+		if err != nil {
+			legacy.Close()
+			t.Fatalf("insert legacy event %q: %v", title, err)
+		}
+		id, err := insert.LastInsertId()
+		if err != nil {
+			legacy.Close()
+			t.Fatalf("read legacy event id: %v", err)
+		}
+		return id
 	}
-	eventID, err := insert.LastInsertId()
-	if err != nil {
-		legacy.Close()
-		t.Fatalf("read legacy event id: %v", err)
+	insertDay := func(eventID int64, day, title, start, phase string, through any, workspaceID int64) {
+		t.Helper()
+		if _, err := legacy.Exec(`
+			INSERT INTO event_days (
+				event_id, day, through_day, title, start, end, color, all_day,
+				description, result, bold, phase, deadline, workspace_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, '#7663b5', 1, '', '', 0, ?, '', ?, '2026-03-02 00:10:00', '2026-03-02 00:10:00')
+		`, eventID, day, through, title, start, start, phase, workspaceID); err != nil {
+			legacy.Close()
+			t.Fatalf("insert legacy board row for %q: %v", title, err)
+		}
 	}
-	if _, err := legacy.Exec(`
-		INSERT INTO event_days (
-			event_id, day, through_day, title, start, end, color, all_day,
-			description, result, bold, phase, deadline, created_at, updated_at
-		) VALUES (?, '2026-03-02', NULL, 'Existing task', '2026-03-02T00:00:00',
-			'2026-03-02T00:00:00', '#7663b5', 1, '', '', 0, 'todo', '',
-			'2026-03-02 00:10:00', '2026-03-02 00:10:00')
-	`, eventID); err != nil {
-		legacy.Close()
-		t.Fatalf("insert legacy board row: %v", err)
-	}
+	seekino := insertEvent("Seekino release", today+"T00:00:00", "todo", "", 2)
+	personal := insertEvent("个人 IP 发布", today+"T00:00:00", "progressing", "", 3)
+	finished := insertEvent("Yesterday done", yesterday+"T00:00:00", "done", "finished", 2)
+	carried := insertEvent("Carried personal", yesterday+"T00:00:00", "progressing", "", 3)
+	insertDay(seekino, today, "Seekino release", today+"T00:00:00", "todo", nil, 2)
+	insertDay(personal, today, "个人 IP 发布", today+"T00:00:00", "progressing", nil, 3)
+	insertDay(finished, yesterday, "Yesterday done", yesterday+"T00:00:00", "done", yesterday, 2)
+	insertDay(carried, yesterday, "Carried personal", yesterday+"T00:00:00", "progressing", nil, 3)
 	if _, err := legacy.Exec(`
 		INSERT INTO board_meta (id, seeded_at) VALUES (1, '2026-03-02 00:10:00')
 	`); err != nil {
 		legacy.Close()
 		t.Fatalf("insert legacy board marker: %v", err)
 	}
+	if _, err := legacy.Exec(`
+		INSERT INTO chat_activities (
+			day, state, reason, before_phase, source_id, thread_id, thread_title,
+			source_at, quote, task_key, event_id, workspace_id, title, phase,
+			description, result, needs_review, base_updated, created_at, resolved_at
+		) VALUES
+			(?, 'pending', '', 'todo', 'legacy-pending', 'thread-legacy', 'Old project review',
+			 ?, 'legacy quote', 'seekino-release', ?, 3, 'Seekino release', 'progressing',
+			 '', '', 0, '', ?, NULL),
+			(?, 'applied', 'approved by user', 'todo', 'legacy-applied', 'thread-legacy', 'Old project review',
+			 ?, 'legacy quote', 'personal-release', ?, 2, '个人 IP 发布', 'progressing',
+			 '', '', 0, '', ?, ?)
+	`, today, now.UnixMilli(), seekino, now,
+		today, now.Add(-time.Minute).UnixMilli(), personal, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
+		legacy.Close()
+		t.Fatalf("insert legacy chat activities: %v", err)
+	}
 	if err := legacy.Close(); err != nil {
 		t.Fatalf("close legacy database: %v", err)
 	}
 
-	now := time.Date(2026, time.March, 2, 9, 30, 0, 0, time.FixedZone("UTC+8", 8*60*60))
 	db, err := openDatabaseAt(path, now)
 	if err != nil {
 		t.Fatalf("open existing database: %v", err)
 	}
-	var workspaceID int64
-	if err := db.QueryRow("SELECT workspace_id FROM events WHERE id = ?", eventID).Scan(&workspaceID); err != nil {
-		db.Close()
-		t.Fatalf("read event workspace: %v", err)
+	defer db.Close()
+	service := calendar.NewService(db)
+
+	board, err := service.GetBoardEvents(context.Background(), today)
+	if err != nil {
+		t.Fatalf("today board: %v", err)
 	}
-	if workspaceID != 1 {
-		db.Close()
-		t.Fatalf("event workspace = %d, want Daily Routine", workspaceID)
+	if len(board) != 3 {
+		t.Fatalf("today board = %#v, want all live project cards", board)
 	}
-	var dayWorkspace int64
-	var dayTitle string
-	if err := db.QueryRow(`SELECT workspace_id, title FROM event_days WHERE event_id = ? AND day = '2026-03-02'`, eventID).
-		Scan(&dayWorkspace, &dayTitle); err != nil {
-		db.Close()
-		t.Fatalf("read board workspace: %v", err)
+	boardIDs := make(map[int64]calendar.Event, len(board))
+	for _, event := range board {
+		boardIDs[event.ID] = event
 	}
-	if dayWorkspace != 1 || dayTitle != "Existing task" {
-		db.Close()
-		t.Fatalf("board snapshot = workspace %d title %q", dayWorkspace, dayTitle)
+	for _, id := range []int64{seekino, personal, carried} {
+		if _, ok := boardIDs[id]; !ok {
+			t.Fatalf("today's card %d is missing: %#v", id, board)
+		}
 	}
-	var dayCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM event_days").Scan(&dayCount); err != nil {
-		db.Close()
-		t.Fatalf("count board rows: %v", err)
+	if _, ok := boardIDs[finished]; ok {
+		t.Fatalf("finished historical card is visible today: %#v", board)
 	}
-	if dayCount != 1 {
-		db.Close()
-		t.Fatalf("existing board rows were reseeded: %d", dayCount)
+	if boardIDs[carried].Start != yesterday+"T00:00:00" || boardIDs[carried].Phase != calendar.PhaseProgressing {
+		t.Fatalf("carried card changed: %#v", boardIDs[carried])
 	}
-	var chatTables int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('chat_sources', 'chat_links', 'chat_activities')`).Scan(&chatTables); err != nil {
-		db.Close()
-		t.Fatalf("inspect chat schema: %v", err)
+	yesterdayBoard, err := service.GetBoardEvents(context.Background(), yesterday)
+	if err != nil || len(yesterdayBoard) != 2 {
+		t.Fatalf("yesterday board = %#v err=%v", yesterdayBoard, err)
 	}
-	if chatTables != 3 {
-		db.Close()
-		t.Fatalf("chat tables = %d, want 3", chatTables)
+	for _, event := range yesterdayBoard {
+		if event.ID == finished && event.Phase != calendar.PhaseDone {
+			t.Fatalf("past completion changed: %#v", event)
+		}
+	}
+
+	activities, err := service.ListChatActivity(context.Background())
+	if err != nil {
+		t.Fatalf("list legacy activity: %v", err)
+	}
+	var pending *calendar.ChatActivity
+	for i := range activities {
+		if activities[i].Change.Source.ID == "legacy-pending" && activities[i].State == "pending" {
+			pending = &activities[i]
+		}
+	}
+	if pending == nil || pending.Change.EventID != seekino {
+		t.Fatalf("pending legacy review = %#v", activities)
+	}
+	approved, err := service.ResolveChatChange(context.Background(), pending.ID, true)
+	if err != nil {
+		t.Fatalf("approve legacy review: %v", err)
+	}
+	if approved.State != "applied" {
+		t.Fatalf("legacy review state = %q, reason %q", approved.State, approved.Reason)
+	}
+
+	var eventCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil || eventCount != 4 {
+		t.Fatalf("event count after legacy approval = %d err=%v", eventCount, err)
+	}
+	var workspaceCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM workspaces").Scan(&workspaceCount); err != nil || workspaceCount != 3 {
+		t.Fatalf("legacy workspaces = %d err=%v", workspaceCount, err)
+	}
+	var eventWorkspace int64
+	if err := db.QueryRow("SELECT workspace_id FROM events WHERE id = ?", seekino).Scan(&eventWorkspace); err != nil || eventWorkspace != 2 {
+		t.Fatalf("legacy event workspace = %d err=%v", eventWorkspace, err)
+	}
+	var summaryObjects int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE name IN ('chat_summary_keys', 'idx_chat_summary_keys_task_key')
+	`).Scan(&summaryObjects); err != nil || summaryObjects != 2 {
+		t.Fatalf("chat summary key schema = %d err=%v", summaryObjects, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close existing database: %v", err)
@@ -418,18 +511,8 @@ func TestOpenDatabaseMigratesExistingBoardAndWorkspacesBeforeSeedMarker(t *testi
 		t.Fatalf("reopen existing database: %v", err)
 	}
 	defer reopened.Close()
-	if err := reopened.QueryRow("SELECT COUNT(*) FROM event_days").Scan(&dayCount); err != nil {
-		t.Fatalf("count board rows after reopen: %v", err)
-	}
-	if dayCount != 1 {
-		t.Fatalf("reopen duplicated existing board rows: %d", dayCount)
-	}
-	var eventCount int
-	if err := reopened.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil {
-		t.Fatalf("count events after reopen: %v", err)
-	}
-	if eventCount != 1 {
-		t.Fatalf("event count after reopen = %d, want 1", eventCount)
+	if err := reopened.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil || eventCount != 4 {
+		t.Fatalf("event count after reopen = %d err=%v", eventCount, err)
 	}
 }
 

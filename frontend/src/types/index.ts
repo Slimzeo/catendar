@@ -1,11 +1,5 @@
 export type EventPhase = 'todo' | 'progressing' | 'done'
 
-export interface Workspace {
-  id: number
-  name: string
-  hint: string
-}
-
 export interface CalendarEvent {
   id: number
   title: string
@@ -18,7 +12,6 @@ export interface CalendarEvent {
   bold: boolean
   phase: EventPhase
   deadline?: string
-  workspaceId: number
   createdAt: string
   updatedAt: string
 }
@@ -35,7 +28,6 @@ export interface EventInput {
   phase?: EventPhase
   deadline?: string
   boardDay?: string
-  workspaceId?: number
 }
 
 export interface DayCell {
@@ -147,7 +139,6 @@ export interface ChatChange {
   source: ChatEvidence
   taskKey: string
   eventId: number
-  workspaceId: number
   title: string
   phase: EventPhase
   description: string

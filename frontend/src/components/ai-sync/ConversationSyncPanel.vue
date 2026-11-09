@@ -4,7 +4,6 @@ import { format } from 'date-fns'
 import { NButton, NInput, useMessage } from 'naive-ui'
 import type { ChatActivity } from '@/types'
 import { useConversationSyncStore } from '@/stores/conversationSync'
-import { useWorkspacesStore } from '@/stores/workspaces'
 
 const props = withDefaults(defineProps<{
   active?: boolean
@@ -13,7 +12,6 @@ const props = withDefaults(defineProps<{
 })
 
 const conversationStore = useConversationSyncStore()
-const workspacesStore = useWorkspacesStore()
 const message = useMessage()
 const codexPath = ref('')
 const dirty = ref(false)
@@ -74,10 +72,6 @@ function formatSourceTime(seconds: number): string {
   return Number.isNaN(date.getTime()) ? '' : format(date, 'MMM d, HH:mm')
 }
 
-function workspaceName(id: number): string {
-  return workspacesStore.workspaceName(id)
-}
-
 function phaseLabel(value: string): string {
   return value || 'todo'
 }
@@ -131,7 +125,7 @@ async function resolve(activity: ChatActivity, accept: boolean) {
       <div class="heading-copy">
         <h3 id="conversation-title">Codex conversations</h3>
         <p>
-          Click AI Sync to organize the last 72 hours of user messages and final replies with your signed-in Codex. Clear updates go to today’s board.
+          Click AI Sync to organize the last 72 hours of user messages and final replies with your signed-in Codex. Each project or independent deliverable gets one summary card. Work stays in progressing until the whole outcome is confirmed.
         </p>
       </div>
       <span class="state-pill" :class="conversationStore.status.state" role="status">
@@ -220,7 +214,7 @@ async function resolve(activity: ChatActivity, accept: boolean) {
         <div class="activity-head">
           <strong>{{ activity.change.title }}</strong>
           <span class="activity-target">
-            {{ workspaceName(activity.change.workspaceId) }} · {{ phaseLabel(activity.change.phase) }}
+            {{ phaseLabel(activity.change.phase) }}
           </span>
         </div>
         <p class="activity-meta">
@@ -228,7 +222,7 @@ async function resolve(activity: ChatActivity, accept: boolean) {
           {{ activity.reason || 'This change needs confirmation.' }}
         </p>
         <div v-if="activity.current" class="current-card">
-          <strong>Current card</strong> · {{ workspaceName(activity.current.workspaceId) }} · {{ activity.current.phase }}
+          <strong>Current card</strong> · {{ activity.current.phase }}
           <p v-if="activity.change.title !== activity.current.title">{{ activity.current.title }}</p>
           <p v-if="activity.change.description && activity.change.description !== activity.current.description">Description · {{ activity.current.description || 'Empty' }}</p>
           <p v-if="activity.change.result && activity.change.result !== activity.current.result">Result · {{ activity.current.result || 'Empty' }}</p>
@@ -286,7 +280,7 @@ async function resolve(activity: ChatActivity, accept: boolean) {
         <div class="activity-head">
           <strong>{{ activity.change.title }}</strong>
           <span class="activity-target">
-            {{ workspaceName(activity.change.workspaceId) }} · {{ phaseLabel(activity.change.phase) }}
+            {{ phaseLabel(activity.change.phase) }}
           </span>
           <span class="outcome" :class="activity.state">{{ activityStateLabel(activity) }}</span>
         </div>

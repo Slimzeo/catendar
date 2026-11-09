@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -21,17 +22,23 @@ import (
 const (
 	dateLayout = "2006-01-02"
 
-	maxPlanChanges      = 20
-	maxChangesPerThread = 6
-	maxTitleRunes       = 200
-	maxDescriptionRunes = 2000
-	maxResultRunes      = 2000
-	minQuoteRunes       = 4
-	maxQuoteRunes       = 500
-	maxTaskKeyRunes     = 80
+	maxPlanChanges        = 20
+	maxChangesPerThread   = 6
+	maxBoardSentenceRunes = 180
+	maxTitleRunes         = 200
+	maxDescriptionRunes   = 2000
+	maxResultRunes        = 2000
+	minQuoteRunes         = 4
+	maxQuoteRunes         = 500
+	maxTaskKeyRunes       = 80
 
 	maxPlannerPromptBytes = 2 * 1024 * 1024
 	maxPlannerOutputBytes = 1 * 1024 * 1024
+
+	completionNone      = "none"
+	completionPartial   = "partial"
+	completionUncertain = "uncertain"
+	completionWhole     = "whole"
 )
 
 var (
@@ -57,24 +64,26 @@ const plannerSchema = `{
           "quote",
           "taskKey",
           "eventId",
-          "workspaceId",
           "title",
           "phase",
           "description",
           "result",
-          "needsReview"
+          "needsReview",
+          "completionScope",
+          "completionQuote"
         ],
         "properties": {
           "sourceId": {"type": "string"},
           "quote": {"type": "string"},
           "taskKey": {"type": "string"},
           "eventId": {"type": "integer"},
-          "workspaceId": {"type": "integer"},
           "title": {"type": "string"},
           "phase": {"type": "string", "enum": ["todo", "progressing", "done"]},
           "description": {"type": "string"},
           "result": {"type": "string"},
-          "needsReview": {"type": "boolean"}
+          "needsReview": {"type": "boolean"},
+          "completionScope": {"type": "string", "enum": ["none", "partial", "uncertain", "whole"]},
+          "completionQuote": {"type": "string"}
         }
       }
     }
@@ -82,16 +91,17 @@ const plannerSchema = `{
 }`
 
 type modelChange struct {
-	SourceID    *string `json:"sourceId"`
-	Quote       *string `json:"quote"`
-	TaskKey     *string `json:"taskKey"`
-	EventID     *int64  `json:"eventId"`
-	WorkspaceID *int64  `json:"workspaceId"`
-	Title       *string `json:"title"`
-	Phase       *string `json:"phase"`
-	Description *string `json:"description"`
-	Result      *string `json:"result"`
-	NeedsReview *bool   `json:"needsReview"`
+	SourceID        *string `json:"sourceId"`
+	Quote           *string `json:"quote"`
+	TaskKey         *string `json:"taskKey"`
+	EventID         *int64  `json:"eventId"`
+	Title           *string `json:"title"`
+	Phase           *string `json:"phase"`
+	Description     *string `json:"description"`
+	Result          *string `json:"result"`
+	NeedsReview     *bool   `json:"needsReview"`
+	CompletionScope *string `json:"completionScope"`
+	CompletionQuote *string `json:"completionQuote"`
 }
 
 type modelOutput struct {
@@ -104,7 +114,6 @@ type modelOutput struct {
 func Plan(
 	ctx context.Context,
 	binary, day string,
-	workspaces []calendar.Workspace,
 	events []calendar.Event,
 	messages []Message,
 ) ([]calendar.ChatChange, error) {
@@ -124,15 +133,8 @@ func Plan(
 	if len(messages) == 0 {
 		return []calendar.ChatChange{}, nil
 	}
-	if len(workspaces) == 0 {
-		return nil, errors.New("conversation planner has no workspaces")
-	}
 
 	messageByID, err := indexMessages(messages)
-	if err != nil {
-		return nil, err
-	}
-	workspaceIDs, err := indexWorkspaces(workspaces)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +143,7 @@ func Plan(
 		return nil, err
 	}
 
-	prompt, err := buildPrompt(day, workspaces, events, messages)
+	prompt, err := buildPrompt(day, events, messages)
 	if err != nil {
 		return nil, err
 	}
@@ -156,14 +158,7 @@ func Plan(
 	if err != nil {
 		return nil, err
 	}
-	changes, err := validateProposals(proposals, messageByID, workspaceIDs, eventsByID, day)
-	if err != nil {
-		return nil, err
-	}
-	if len(proposals) > 0 && len(changes) == 0 {
-		return nil, fmt.Errorf("%w: no proposal had verifiable evidence and a valid target", ErrPlannerOutput)
-	}
-	return changes, nil
+	return validateProposals(proposals, messageByID, eventsByID, day)
 }
 
 func indexMessages(messages []Message) (map[string]Message, error) {
@@ -180,20 +175,6 @@ func indexMessages(messages []Message) (map[string]Message, error) {
 			return nil, errors.New("conversation message ids must be unique")
 		}
 		byID[message.ID] = message
-	}
-	return byID, nil
-}
-
-func indexWorkspaces(workspaces []calendar.Workspace) (map[int64]struct{}, error) {
-	byID := make(map[int64]struct{}, len(workspaces))
-	for index, workspace := range workspaces {
-		if workspace.ID < 0 {
-			return nil, fmt.Errorf("workspace %d has an invalid id", index+1)
-		}
-		if _, exists := byID[workspace.ID]; exists {
-			return nil, errors.New("workspace ids must be unique")
-		}
-		byID[workspace.ID] = struct{}{}
 	}
 	return byID, nil
 }
@@ -374,17 +355,20 @@ func stripJSONFence(value []byte) []byte {
 	return bytes.TrimSpace(body[:len(body)-3])
 }
 
+type changeCandidate struct {
+	change calendar.ChatChange
+	at     int64
+	order  int
+}
+
 func validateProposals(
 	proposals []modelChange,
 	messages map[string]Message,
-	workspaces map[int64]struct{},
 	events map[int64]calendar.Event,
 	day string,
 ) ([]calendar.ChatChange, error) {
-	changes := make([]calendar.ChatChange, 0, len(proposals))
-	taskKeys := make(map[string]struct{}, len(proposals))
-	eventIDs := make(map[int64]struct{}, len(proposals))
-	perThread := make(map[string]int, len(proposals))
+	policySkipped := 0
+	candidates := make([]changeCandidate, 0, len(proposals))
 
 	messageValues := make([]Message, 0, len(messages))
 	for _, message := range messages {
@@ -421,18 +405,22 @@ func validateProposals(
 		if err != nil {
 			return nil, err
 		}
+		scopeValue, err := requiredString(proposal.CompletionScope, "completionScope", index)
+		if err != nil {
+			return nil, err
+		}
+		completionQuoteValue, err := requiredString(proposal.CompletionQuote, "completionQuote", index)
+		if err != nil {
+			return nil, err
+		}
 		if proposal.EventID == nil {
 			return nil, missingField(index, "eventId")
-		}
-		if proposal.WorkspaceID == nil {
-			return nil, missingField(index, "workspaceId")
 		}
 		if proposal.NeedsReview == nil {
 			return nil, missingField(index, "needsReview")
 		}
 		eventID := *proposal.EventID
-		workspaceID := *proposal.WorkspaceID
-		if eventID < 0 || workspaceID < 0 {
+		if eventID < 0 {
 			return nil, fmt.Errorf("%w: change %d has a negative id", ErrPlannerOutput, index+1)
 		}
 
@@ -441,6 +429,12 @@ func validateProposals(
 		case calendar.PhaseTodo, calendar.PhaseProgressing, calendar.PhaseDone:
 		default:
 			return nil, fmt.Errorf("%w: change %d has an invalid phase", ErrPlannerOutput, index+1)
+		}
+		scope := strings.ToLower(strings.TrimSpace(scopeValue))
+		switch scope {
+		case completionNone, completionPartial, completionUncertain, completionWhole:
+		default:
+			return nil, fmt.Errorf("%w: change %d has an invalid completionScope", ErrPlannerOutput, index+1)
 		}
 		title := strings.TrimSpace(titleValue)
 		description := strings.TrimSpace(descriptionValue)
@@ -470,77 +464,190 @@ func validateProposals(
 		if !ok {
 			continue
 		}
-		if message.ContextOnly && eventID == 0 {
-			// Context-only messages explain follow-ups but cannot justify a
-			// brand-new task on their own.
+		if message.ContextOnly {
+			policySkipped++
 			continue
 		}
 		quote, ok := evidenceQuote(message.Text, quoteValue)
 		if !ok {
 			continue
 		}
-		if workspaceID <= 0 {
-			continue
+
+		proposedPhase := phase
+		description, result = boardSentence(description), boardSentence(result)
+		completionQuote := strings.TrimSpace(completionQuoteValue)
+		if phase == calendar.PhaseDone {
+			whole := scope == completionWhole && result != ""
+			if whole {
+				verified, ok := evidenceQuote(message.Text, completionQuote)
+				if ok && !stepReceipt.MatchString(verified) {
+					quote = verified
+				} else {
+					whole = false
+				}
+			}
+			if !whole {
+				// A done proposal without verified whole-completion evidence is
+				// still useful, but it cannot complete the card. Downgrade it
+				// instead of rejecting the plan.
+				phase = calendar.PhaseProgressing
+				description, result = "", ""
+			}
 		}
-		if _, ok := workspaces[workspaceID]; !ok {
+		if eventID == 0 && proposedPhase == calendar.PhaseDone && dayString(message.At) != day {
+			// A delayed scan must not turn yesterday's completed work into a
+			// new card on today's board. Fresh evidence of an ongoing project
+			// can still start a progressing summary.
+			policySkipped++
 			continue
 		}
 
 		baseUpdated := ""
-		existingResult := ""
 		if eventID > 0 {
 			event, ok := events[eventID]
 			if !ok {
 				continue
 			}
 			baseUpdated = event.UpdatedAt.Format(time.RFC3339Nano)
-			existingResult = strings.TrimSpace(event.Result)
-			if _, duplicate := eventIDs[eventID]; duplicate {
-				return nil, fmt.Errorf("%w: change %d targets the same event twice", ErrPlannerOutput, index+1)
+			if event.SummaryKey != "" {
+				taskKey = event.SummaryKey
+				title = event.Title
 			}
-		} else if phase == calendar.PhaseDone && dayString(message.At) != day {
-			// A delayed scan must not turn yesterday's completed work into a
-			// new done card on today's board.
-			continue
-		}
-		if phase == calendar.PhaseDone && result == "" && existingResult == "" {
-			return nil, fmt.Errorf("%w: change %d completes without a result", ErrPlannerOutput, index+1)
 		}
 		if title == "" {
 			continue
 		}
-		if _, duplicate := taskKeys[taskKey]; duplicate {
-			return nil, fmt.Errorf("%w: change %d repeats taskKey", ErrPlannerOutput, index+1)
-		}
-		if perThread[message.ThreadID] >= maxChangesPerThread {
-			return nil, fmt.Errorf("%w: too many proposals for one conversation", ErrPlannerOutput)
-		}
-		taskKeys[taskKey] = struct{}{}
-		if eventID > 0 {
-			eventIDs[eventID] = struct{}{}
-		}
-		perThread[message.ThreadID]++
 
-		changes = append(changes, calendar.ChatChange{
-			Source: calendar.ChatEvidence{
-				ID:          message.ID,
-				ThreadID:    message.ThreadID,
-				ThreadTitle: message.ThreadTitle,
-				At:          message.At,
-				Quote:       quote,
+		candidates = append(candidates, changeCandidate{
+			change: calendar.ChatChange{
+				Source: calendar.ChatEvidence{
+					ID:          message.ID,
+					ThreadID:    message.ThreadID,
+					ThreadTitle: message.ThreadTitle,
+					At:          message.At,
+					Quote:       quote,
+				},
+				TaskKey:     taskKey,
+				EventID:     eventID,
+				Title:       title,
+				Phase:       phase,
+				Description: description,
+				Result:      result,
+				NeedsReview: *proposal.NeedsReview,
+				BaseUpdated: baseUpdated,
 			},
-			TaskKey:     taskKey,
-			EventID:     eventID,
-			WorkspaceID: workspaceID,
-			Title:       title,
-			Phase:       phase,
-			Description: description,
-			Result:      result,
-			NeedsReview: *proposal.NeedsReview,
-			BaseUpdated: baseUpdated,
+			at:    message.At,
+			order: index,
 		})
 	}
+
+	if len(proposals) > policySkipped && len(candidates) == 0 {
+		return nil, fmt.Errorf("%w: no proposal had verifiable evidence and a valid target", ErrPlannerOutput)
+	}
+	changes := dedupeCandidates(candidates, events)
+	perThread := make(map[string]int, len(changes))
+	for _, change := range changes {
+		perThread[change.Source.ThreadID]++
+		if perThread[change.Source.ThreadID] > maxChangesPerThread {
+			return nil, fmt.Errorf("%w: too many proposals for one conversation", ErrPlannerOutput)
+		}
+	}
 	return changes, nil
+}
+
+// Bare tool receipts do not prove that the overall deliverable was accepted,
+// even if the model labels such a quotation as whole-project evidence.
+var stepReceipt = regexp.MustCompile(`(?i)^(?:(?:all|全部|所有|[0-9]+(?:项|个)?)\s*)?(?:(?:unit |integration )?tests?|checks?|ci|build|单元测试|集成测试|测试|构建|编译|检查)\s*(?:全部|均|已|all )?\s*(?:通过|成功|passed|passing|succeeded|green|ok)[.!。！\s]*$|^(?:PR|pull request)\s*#?\d+\s*(?:已合并|merged)[.!。！\s]*$`)
+
+// Optional text is a board summary. Keep a single short sentence and keep
+// lists and long technical reports in their original conversation.
+func boardSentence(value string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(value), "\n")
+	for _, marker := range []string{"- ", "* ", "• ", "1. ", "1) ", "|", "`"} {
+		if strings.HasPrefix(line, marker) {
+			return ""
+		}
+	}
+	runes := []rune(line)
+	for i, r := range runes {
+		if strings.ContainsRune("。！？", r) || (strings.ContainsRune(".!?", r) && (i+1 == len(runes) || unicode.IsSpace(runes[i+1]))) {
+			runes = runes[:i+1]
+			break
+		}
+	}
+	if len(runes) > maxBoardSentenceRunes {
+		return ""
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+// Bind proposals to visible cards before choosing one update per outcome.
+func dedupeCandidates(candidates []changeCandidate, events map[int64]calendar.Event) []calendar.ChatChange {
+	targets := make(map[string]int64)
+	bind := func(key string, id int64) {
+		if key == "" || id == 0 {
+			return
+		}
+		if current, exists := targets[key]; exists && current != id {
+			targets[key] = -1 // let the calendar queue ambiguous matches for review
+		} else {
+			targets[key] = id
+		}
+	}
+	for _, event := range events {
+		bind(event.SummaryKey, event.ID)
+	}
+	for _, c := range candidates {
+		bind(c.change.TaskKey, c.change.EventID)
+	}
+
+	type identity struct {
+		id  int64
+		key string
+	}
+	var order []identity
+	best := make(map[identity]changeCandidate)
+	for _, c := range candidates {
+		change := &c.change
+		match := targets[change.TaskKey]
+		if match < 0 {
+			change.EventID, change.BaseUpdated, change.NeedsReview = 0, "", true
+		} else if change.EventID == 0 && match > 0 {
+			card := events[match]
+			change.EventID, change.Title = match, card.Title
+			change.BaseUpdated = card.UpdatedAt.Format(time.RFC3339Nano)
+		}
+		key := identity{id: change.EventID}
+		if key.id == 0 {
+			key.key = change.TaskKey
+		}
+		prev, exists := best[key]
+		if !exists {
+			order = append(order, key)
+		}
+		if !exists || candidateIsNewer(c, prev) {
+			best[key] = c
+		}
+	}
+	changes := make([]calendar.ChatChange, 0, len(order))
+	for _, key := range order {
+		changes = append(changes, best[key].change)
+	}
+	return changes
+}
+
+func candidateIsNewer(candidate, current changeCandidate) bool {
+	if candidate.at != current.at {
+		return candidate.at > current.at
+	}
+	if candidate.change.Phase != current.change.Phase &&
+		(candidate.change.Phase == calendar.PhaseProgressing || current.change.Phase == calendar.PhaseProgressing) {
+		return candidate.change.Phase == calendar.PhaseProgressing
+	}
+	if candidate.change.Source.ID != current.change.Source.ID {
+		return candidate.change.Source.ID < current.change.Source.ID
+	}
+	return candidate.order > current.order
 }
 
 func requiredString(value *string, name string, index int) (string, error) {

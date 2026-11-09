@@ -191,7 +191,6 @@ export namespace calendar {
 	    source: ChatEvidence;
 	    taskKey: string;
 	    eventId: number;
-	    workspaceId: number;
 	    title: string;
 	    phase: string;
 	    description: string;
@@ -208,7 +207,6 @@ export namespace calendar {
 	        this.source = this.convertValues(source["source"], ChatEvidence);
 	        this.taskKey = source["taskKey"];
 	        this.eventId = source["eventId"];
-	        this.workspaceId = source["workspaceId"];
 	        this.title = source["title"];
 	        this.phase = source["phase"];
 	        this.description = source["description"];
@@ -247,7 +245,6 @@ export namespace calendar {
 	    bold: boolean;
 	    phase: string;
 	    deadline?: string;
-	    workspaceId: number;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -270,7 +267,6 @@ export namespace calendar {
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
-	        this.workspaceId = source["workspaceId"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
@@ -350,7 +346,6 @@ export namespace calendar {
 	    phase?: string;
 	    deadline?: string;
 	    boardDay?: string;
-	    workspaceId?: number;
 
 	    static createFrom(source: any = {}) {
 	        return new EventInput(source);
@@ -369,23 +364,6 @@ export namespace calendar {
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
 	        this.boardDay = source["boardDay"];
-	        this.workspaceId = source["workspaceId"];
-	    }
-	}
-	export class Workspace {
-	    id: number;
-	    name: string;
-	    hint: string;
-
-	    static createFrom(source: any = {}) {
-	        return new Workspace(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.hint = source["hint"];
 	    }
 	}
 

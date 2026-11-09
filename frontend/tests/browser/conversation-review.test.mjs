@@ -14,11 +14,6 @@ after(async () => {
 function seedConversationSync() {
   const now = new Date()
   const day = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
-  const workspaces = [
-    { id: 1, name: 'Daily Routine', hint: '' },
-    { id: 2, name: 'Seekino', hint: 'Launch planning' },
-    { id: 3, name: '个人 IP 打造', hint: 'Content' }
-  ]
   const row = input => ({
     start: `${day}T00:00:00`,
     end: `${day}T00:00:00`,
@@ -28,13 +23,12 @@ function seedConversationSync() {
     result: '',
     color: '#7663b5',
     bold: false,
-    workspaceId: 1,
     ...input
   })
   let boardRows = [
-    row({ id: 7, title: 'Follow up with Mina', workspaceId: 2 }),
-    row({ id: 8, title: 'Old brief', workspaceId: 3 }),
-    row({ id: 9, title: 'Publish checklist', workspaceId: 1 })
+    row({ id: 7, title: 'Follow up with Mina' }),
+    row({ id: 8, title: 'Old brief' }),
+    row({ id: 9, title: 'Publish checklist' })
   ]
   const copyActivity = activity => ({
     ...activity,
@@ -58,7 +52,6 @@ function seedConversationSync() {
         },
         taskKey: 'seekino-1',
         eventId: 7,
-        workspaceId: 2,
         title: 'Plan launch review',
         phase: 'done',
         description: 'Full proposed description line one.\nFull proposed description line two.',
@@ -83,7 +76,6 @@ function seedConversationSync() {
         },
         taskKey: 'ip-1',
         eventId: 8,
-        workspaceId: 3,
         title: 'Archive old brief',
         phase: 'progressing',
         description: '',
@@ -109,7 +101,6 @@ function seedConversationSync() {
         },
         taskKey: 'routine-2',
         eventId: 9,
-        workspaceId: 1,
         title: 'Stale proposal',
         phase: 'done',
         description: '',
@@ -134,7 +125,6 @@ function seedConversationSync() {
         },
         taskKey: 'routine-1',
         eventId: 9,
-        workspaceId: 1,
         title: 'Draft publish checklist',
         phase: 'done',
         description: '',
@@ -164,7 +154,6 @@ function seedConversationSync() {
   window.emailStarts = []
   window.go = { main: {
     CalendarApp: {
-      ListWorkspaces: async () => workspaces.map(item => ({ ...item })),
       GetEvents: async () => boardRows.map(item => ({ ...item })),
       GetBoardEvents: async () => boardRows.map(item => ({ ...item })),
       CreateEvent: async input => {
@@ -182,9 +171,7 @@ function seedConversationSync() {
         updated.phase = phase
         return { ...updated }
       },
-      DeleteEvent: async () => {},
-      CreateWorkspace: async (name, hint) => ({ id: 4, name, hint }),
-      UpdateWorkspace: async (id, name, hint) => ({ id, name, hint })
+      DeleteEvent: async () => {}
     },
     AISyncApp: {
       GetAISyncStatus: async () => ({ state: 'idle', emailCount: 0, readEmails: 0, unreadableEmails: 0, created: 0, skipped: 0, rejected: 0, conflicts: 0 }),
@@ -248,7 +235,7 @@ function seedConversationSync() {
       CancelConversationSync: async () => {
         window.conversationCalls.push('cancel')
         status = { ...status, state: 'cancelled', message: 'Sync cancelled' }
-        boardRows.push(row({ id: 99, title: 'Created during sync', workspaceId: 1 }))
+        boardRows.push(row({ id: 99, title: 'Created during sync' }))
         return true
       },
       SaveConversationSyncSettings: async codexPath => {
@@ -273,7 +260,6 @@ function seedConversationSync() {
                   ...item,
                   title: activity.change.title,
                   phase: activity.change.phase,
-                  workspaceId: activity.change.workspaceId,
                   description: activity.change.description,
                   result: activity.change.result
                 }
@@ -323,12 +309,10 @@ test('toolbar AI Sync starts one manual run, leaves idle paths alone, and keeps 
     await page.keyboard.press('Escape')
     await page.locator('#settings-title').waitFor({ state: 'hidden' })
 
-    // Date changes and project switches only reload the board.
+    // Date changes only reload the board.
     await page.getByRole('button', { name: 'Next day' }).click()
     await page.getByRole('button', { name: 'Previous day' }).click()
-    await page.getByRole('button', { name: 'Seekino', exact: true }).click()
-    await page.getByRole('button', { name: 'All', exact: true }).click()
-    assert.equal(await startCount(page), 0, 'date and project changes must not scan conversations')
+    assert.equal(await startCount(page), 0, 'date changes must not scan conversations')
 
     // Two synchronous toolbar clicks must still create exactly one run.
     await page.locator('.ai-sync-button').evaluate(button => {
@@ -396,7 +380,7 @@ test('conversation review shows full proposals, saves only the Codex path, and r
     await first.waitFor()
     const firstText = await first.innerText()
     assert.match(firstText, /Plan launch review/)
-    assert.match(firstText, /Seekino · done/)
+    assert.equal((await first.locator('.activity-target').innerText()).trim(), 'done')
     assert.match(firstText, /Before progressing/)
     assert.match(firstText, /My original review notes/)
     assert.match(firstText, /Task changed since the conversation\./)

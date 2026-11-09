@@ -19,10 +19,7 @@ type testConversationBoard struct {
 	seen map[string]bool
 }
 
-func (b *testConversationBoard) ListWorkspaces(context.Context) ([]calendar.Workspace, error) {
-	return []calendar.Workspace{{ID: 1, Name: "Daily Routine"}}, nil
-}
-func (b *testConversationBoard) GetBoardEvents(context.Context, string) ([]calendar.Event, error) {
+func (b *testConversationBoard) GetChatPlanningEvents(context.Context, string) ([]calendar.Event, error) {
 	return nil, nil
 }
 func (b *testConversationBoard) ListChatActivity(context.Context) ([]calendar.ChatActivity, error) {
@@ -87,7 +84,7 @@ func TestConversationSyncManualIncrementalAndRetry(t *testing.T) {
 		return append([]conversations.Message(nil), history...), nil
 	}
 	fail := false
-	s.plan = func(_ context.Context, _, day string, _ []calendar.Workspace, _ []calendar.Event, messages []conversations.Message) ([]calendar.ChatChange, error) {
+	s.plan = func(_ context.Context, _, day string, _ []calendar.Event, messages []conversations.Message) ([]calendar.ChatChange, error) {
 		calls++
 		if day != "2026-11-09" {
 			t.Error("wrong target day")

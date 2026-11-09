@@ -26,6 +26,15 @@ func pendingChatActivity(t *testing.T, service *Service) ChatActivity {
 	return ChatActivity{}
 }
 
+func seedChatSummaryKey(t *testing.T, service *Service, eventID int64, taskKey string) {
+	t.Helper()
+	if _, err := service.db.Exec(
+		"INSERT INTO chat_summary_keys (event_id, task_key) VALUES (?, ?)", eventID, taskKey,
+	); err != nil {
+		t.Fatalf("seed chat summary key: %v", err)
+	}
+}
+
 func TestApplyChatPlanCreatesOnceAndMarksSourcesSeen(t *testing.T) {
 	service := testService(t)
 	now := boardTestTime(2026, time.March, 2)
@@ -36,7 +45,6 @@ func TestApplyChatPlanCreatesOnceAndMarksSourcesSeen(t *testing.T) {
 	change := ChatChange{
 		Source:      chatTestEvidence("msg-1", "thread-1", "Board planning", now),
 		TaskKey:     "ship-board",
-		WorkspaceID: 2,
 		Title:       "Ship the board",
 		Phase:       PhaseProgressing,
 		Description: "from Codex",
@@ -52,7 +60,7 @@ func TestApplyChatPlanCreatesOnceAndMarksSourcesSeen(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("events after chat plan = %#v, err=%v", events, err)
 	}
-	if events[0].WorkspaceID != 2 || events[0].Phase != PhaseProgressing {
+	if events[0].Phase != PhaseProgressing {
 		t.Fatalf("created chat task = %#v", events[0])
 	}
 	createdID := events[0].ID
@@ -78,7 +86,7 @@ func TestApplyChatPlanCreatesOnceAndMarksSourcesSeen(t *testing.T) {
 	}
 }
 
-func TestApplyChatPlanSupportsSameTitleInSeparateWorkspaces(t *testing.T) {
+func TestApplyChatPlanKeepsDistinctSameTitleCards(t *testing.T) {
 	service := testService(t)
 	now := boardTestTime(2026, time.March, 2)
 	service.now = func() time.Time { return now }
@@ -87,18 +95,16 @@ func TestApplyChatPlanSupportsSameTitleInSeparateWorkspaces(t *testing.T) {
 
 	changes := []ChatChange{
 		{
-			Source:      chatTestEvidence("msg-1", "thread-1", "Work", now),
-			TaskKey:     "weekly-work",
-			WorkspaceID: 2,
-			Title:       "Weekly review",
-			Phase:       PhaseTodo,
+			Source:  chatTestEvidence("msg-1", "thread-1", "Work", now),
+			TaskKey: "weekly-work",
+			Title:   "Weekly review",
+			Phase:   PhaseTodo,
 		},
 		{
-			Source:      chatTestEvidence("msg-2", "thread-2", "Personal", now),
-			TaskKey:     "weekly-personal",
-			WorkspaceID: 3,
-			Title:       "Weekly review",
-			Phase:       PhaseTodo,
+			Source:  chatTestEvidence("msg-2", "thread-2", "Personal", now),
+			TaskKey: "weekly-personal",
+			Title:   "Weekly review",
+			Phase:   PhaseTodo,
 		},
 	}
 	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-1", "msg-2"}, changes)
@@ -112,12 +118,12 @@ func TestApplyChatPlanSupportsSameTitleInSeparateWorkspaces(t *testing.T) {
 	if err != nil || len(events) != 2 {
 		t.Fatalf("events = %#v, err=%v", events, err)
 	}
-	workspaces := map[int64]int64{}
-	for _, event := range events {
-		workspaces[event.WorkspaceID] = event.ID
+	if events[0].ID == events[1].ID {
+		t.Fatalf("distinct task keys collapsed into one card: %#v", events)
 	}
-	if workspaces[2] == 0 || workspaces[3] == 0 || workspaces[2] == workspaces[3] {
-		t.Fatalf("workspace identities = %#v", workspaces)
+	board, err := service.GetBoardEvents(ctx, day)
+	if err != nil || len(board) != 2 {
+		t.Fatalf("board = %#v, err=%v", board, err)
 	}
 }
 
@@ -142,7 +148,6 @@ func TestChatConflictQueuesPendingAndDismissalBlocksReplay(t *testing.T) {
 		Source:      chatTestEvidence("msg-conflict", "thread-1", "Planning", now),
 		TaskKey:     "manual-task",
 		EventID:     created.ID,
-		WorkspaceID: 1,
 		Title:       "Manual task",
 		Phase:       PhaseProgressing,
 		Description: "AI text",
@@ -202,7 +207,6 @@ func TestChatApprovalAppliesPendingChangeIdempotently(t *testing.T) {
 		Source:      chatTestEvidence("msg-review", "thread-1", "Review", now),
 		TaskKey:     "reviewed-task",
 		EventID:     created.ID,
-		WorkspaceID: 1,
 		Title:       "Reviewed task",
 		Phase:       PhaseProgressing,
 		Description: "approved description",
@@ -454,11 +458,10 @@ func TestChatTitleFallbackIgnoresHistoricalAndFutureCards(t *testing.T) {
 	}
 
 	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-title"}, []ChatChange{{
-		Source:      chatTestEvidence("msg-title", "thread-1", "Planning", now),
-		TaskKey:     "weekly-review",
-		WorkspaceID: 1,
-		Title:       "weekly review",
-		Phase:       PhaseTodo,
+		Source:  chatTestEvidence("msg-title", "thread-1", "Planning", now),
+		TaskKey: "weekly-review",
+		Title:   "weekly review",
+		Phase:   PhaseTodo,
 	}})
 	if err != nil {
 		t.Fatalf("apply title plan: %v", err)
@@ -496,11 +499,11 @@ func TestChatTitleFallbackMatchesCarriedOpenCard(t *testing.T) {
 		t.Fatalf("create carried task: %v", err)
 	}
 	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-carried"}, []ChatChange{{
-		Source:      chatTestEvidence("msg-carried", "thread-1", "Planning", now),
-		TaskKey:     "carry-review",
-		WorkspaceID: 1,
-		Title:       "Carry review",
-		Phase:       PhaseProgressing,
+		Source:  chatTestEvidence("msg-carried", "thread-1", "Planning", now),
+		TaskKey: "carry-review",
+		Title:   "Carry review",
+		Phase:   PhaseProgressing,
+		Result:  "Draft ready for review.",
 	}})
 	if err != nil || counts.Updated != 1 || counts.Created != 0 || counts.Pending != 0 {
 		t.Fatalf("carried title fallback: counts=%#v err=%v", counts, err)
@@ -526,7 +529,6 @@ func TestChatAutoAppliesNewerAIUpdatesAndPreservesOmittedFields(t *testing.T) {
 	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-ai-1"}, []ChatChange{{
 		Source:      chatTestEvidence("msg-ai-1", "thread-1", "Planning", firstAt),
 		TaskKey:     "ai-task",
-		WorkspaceID: 1,
 		Title:       "AI task",
 		Phase:       PhaseProgressing,
 		Description: "first draft",
@@ -545,7 +547,6 @@ func TestChatAutoAppliesNewerAIUpdatesAndPreservesOmittedFields(t *testing.T) {
 		Source:      chatTestEvidence("msg-ai-2", "thread-1", "Planning", secondAt),
 		TaskKey:     "ai-task",
 		EventID:     eventID,
-		WorkspaceID: 1,
 		Title:       "AI task",
 		Description: "second draft",
 		Result:      "interim result",
@@ -560,13 +561,12 @@ func TestChatAutoAppliesNewerAIUpdatesAndPreservesOmittedFields(t *testing.T) {
 
 	thirdAt := secondAt.Add(10 * time.Minute)
 	counts, err = service.ApplyChatPlan(ctx, day, []string{"msg-ai-3"}, []ChatChange{{
-		Source:      chatTestEvidence("msg-ai-3", "thread-1", "Planning", thirdAt),
-		TaskKey:     "ai-task",
-		EventID:     eventID,
-		WorkspaceID: 1,
-		Title:       "AI task",
+		Source:  chatTestEvidence("msg-ai-3", "thread-1", "Planning", thirdAt),
+		TaskKey: "ai-task",
+		EventID: eventID,
+		Title:   "AI task",
 	}})
-	if err != nil || counts.Updated != 1 {
+	if err != nil || counts.Skipped != 1 || counts.Updated != 0 || counts.Pending != 0 {
 		t.Fatalf("omit fields update: counts=%#v err=%v", counts, err)
 	}
 	event, err = eventByID(ctx, service.db, eventID)
@@ -578,7 +578,6 @@ func TestChatAutoAppliesNewerAIUpdatesAndPreservesOmittedFields(t *testing.T) {
 		Source:      chatTestEvidence("msg-ai-old", "thread-1", "Planning", firstAt.Add(5*time.Minute)),
 		TaskKey:     "ai-task",
 		EventID:     eventID,
-		WorkspaceID: 1,
 		Title:       "AI task",
 		Description: "stale draft",
 	}})
@@ -614,7 +613,6 @@ func TestChatOwnPrecedingUpdateIsNotAHumanEdit(t *testing.T) {
 			Source:      chatTestEvidence("msg-run-1", "thread-1", "Planning", firstAt),
 			TaskKey:     "run-one",
 			EventID:     created.ID,
-			WorkspaceID: 1,
 			Title:       "Run task",
 			Phase:       PhaseProgressing,
 			Description: "draft one",
@@ -624,7 +622,6 @@ func TestChatOwnPrecedingUpdateIsNotAHumanEdit(t *testing.T) {
 			Source:      chatTestEvidence("msg-run-2", "thread-2", "Planning", secondAt),
 			TaskKey:     "run-two",
 			EventID:     created.ID,
-			WorkspaceID: 1,
 			Title:       "Run task",
 			Phase:       PhaseProgressing,
 			Description: "draft two",
@@ -662,7 +659,6 @@ func TestChatPendingConflictQueuesCurrentVersionAndCanBeApproved(t *testing.T) {
 		Source:      chatTestEvidence("msg-review-conflict", "thread-1", "Planning", now),
 		TaskKey:     "manual-task",
 		EventID:     created.ID,
-		WorkspaceID: 1,
 		Title:       "Manual task",
 		Phase:       PhaseProgressing,
 		Description: "AI text",
@@ -708,7 +704,6 @@ func TestChatDoneRequiresProposalResultEvenWithExistingResult(t *testing.T) {
 		Source:      chatTestEvidence("msg-done-no-result", "thread-1", "Done", now),
 		TaskKey:     "almost-done",
 		EventID:     created.ID,
-		WorkspaceID: 1,
 		Title:       "Almost done",
 		Phase:       PhaseDone,
 		BaseUpdated: created.UpdatedAt.Format(time.RFC3339Nano),
@@ -731,7 +726,7 @@ func TestChatDoneRequiresProposalResultEvenWithExistingResult(t *testing.T) {
 	}
 }
 
-func TestChatWorkspaceChangeQueuesWithoutMovingTask(t *testing.T) {
+func TestChatPlanningEventsExposeCanonicalSummaryKeys(t *testing.T) {
 	service := testService(t)
 	now := boardTestTime(2026, time.March, 2)
 	service.now = func() time.Time { return now }
@@ -739,32 +734,296 @@ func TestChatWorkspaceChangeQueuesWithoutMovingTask(t *testing.T) {
 	day := "2026-03-02"
 
 	created, err := service.CreateEvent(ctx, EventInput{
-		Title: "Workspace task", Start: day + "T00:00:00", Color: defaultEventColor,
-		WorkspaceID: 2,
+		Title: "Write release checklist", Start: day + "T00:00:00", Color: defaultEventColor,
 	})
 	if err != nil {
-		t.Fatalf("create workspace task: %v", err)
+		t.Fatalf("create task: %v", err)
 	}
-	change := ChatChange{
-		Source:      chatTestEvidence("msg-workspace", "thread-1", "Planning", now),
-		TaskKey:     "workspace-task",
-		EventID:     created.ID,
-		WorkspaceID: 3,
-		Title:       "Workspace task",
+	seedChatSummaryKey(t, service, created.ID, "release-checklist")
+
+	events, err := service.GetChatPlanningEvents(ctx, day)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("planning events = %#v err=%v", events, err)
+	}
+	if events[0].ID != created.ID || events[0].SummaryKey != "release-checklist" {
+		t.Fatalf("planning event = %#v", events[0])
+	}
+}
+
+func TestChatCanonicalKeyPreventsDuplicateAcrossSessions(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	first := ChatChange{
+		Source:      chatTestEvidence("msg-1", "thread-1", "First planning session", now),
+		TaskKey:     "release-checklist",
+		Title:       "Write release checklist",
 		Phase:       PhaseTodo,
-		BaseUpdated: created.UpdatedAt.Format(time.RFC3339Nano),
+		Description: "first session",
 	}
-	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-workspace"}, []ChatChange{change})
-	if err != nil || counts.Pending != 1 || counts.Updated != 0 {
-		t.Fatalf("workspace change: counts=%#v err=%v", counts, err)
+	if counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-1"}, []ChatChange{first}); err != nil || counts.Created != 1 {
+		t.Fatalf("first session: counts=%#v err=%v", counts, err)
+	}
+	events, err := service.GetEventsByDateRange(ctx, day, day)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events after first session = %#v err=%v", events, err)
+	}
+	createdID := events[0].ID
+
+	second := ChatChange{
+		Source:      chatTestEvidence("msg-2", "thread-2", "Different later session", now.Add(time.Minute)),
+		TaskKey:     "release-checklist",
+		Title:       "Write release checklist",
+		Phase:       PhaseProgressing,
+		Description: "second session",
+	}
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-2"}, []ChatChange{second})
+	if err != nil || counts.Updated != 1 || counts.Created != 0 || counts.Pending != 0 {
+		t.Fatalf("second session: counts=%#v err=%v", counts, err)
+	}
+	after, err := service.GetEventsByDateRange(ctx, day, day)
+	if err != nil || len(after) != 1 || after[0].ID != createdID {
+		t.Fatalf("second session duplicated the task = %#v err=%v", after, err)
+	}
+	if after[0].Phase != PhaseProgressing || after[0].Description != "second session" {
+		t.Fatalf("second session did not update the stable task: %#v", after[0])
+	}
+	planning, err := service.GetChatPlanningEvents(ctx, day)
+	if err != nil || len(planning) != 1 || planning[0].SummaryKey != "release-checklist" {
+		t.Fatalf("canonical key was not retained = %#v err=%v", planning, err)
+	}
+}
+
+func TestChatCanonicalKeyMatchesDifferentTitlesWithoutDuplicate(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	existing, err := service.CreateEvent(ctx, EventInput{
+		Title: "整理发布清单", Start: day + "T00:00:00", Color: defaultEventColor,
+	})
+	if err != nil {
+		t.Fatalf("create existing task: %v", err)
+	}
+	seedChatSummaryKey(t, service, existing.ID, "release-checklist")
+
+	change := ChatChange{
+		Source:  chatTestEvidence("msg-other-title", "thread-2", "Another session", now),
+		TaskKey: "release-checklist",
+		Title:   "Release checklist",
+		Phase:   PhaseTodo,
+	}
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-other-title"}, []ChatChange{change})
+	if err != nil || counts.Pending != 1 || counts.Created != 0 || counts.Updated != 0 {
+		t.Fatalf("different title: counts=%#v err=%v", counts, err)
 	}
 	pending := pendingChatActivity(t, service)
-	if !strings.Contains(pending.Reason, "workspace") {
-		t.Fatalf("workspace conflict reason = %q", pending.Reason)
+	if pending.Change.EventID != existing.ID || !strings.Contains(pending.Reason, "rename") {
+		t.Fatalf("pending canonical match = %#v", pending)
+	}
+	events, err := service.GetEventsByDateRange(ctx, day, day)
+	if err != nil || len(events) != 1 || events[0].ID != existing.ID || events[0].Title != "整理发布清单" {
+		t.Fatalf("canonical key duplicated or renamed the task = %#v err=%v", events, err)
+	}
+}
+
+func TestChatCanonicalKeyIgnoresHistoricalAndFutureCards(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	result := "finished last week"
+	historical, err := service.CreateEvent(ctx, EventInput{
+		Title: "Quarterly summary", Start: "2026-03-01T00:00:00", Color: defaultEventColor,
+		Phase: PhaseDone, Result: &result,
+	})
+	if err != nil {
+		t.Fatalf("create historical task: %v", err)
+	}
+	future, err := service.CreateEvent(ctx, EventInput{
+		Title: "Quarterly summary", Start: "2026-03-03T00:00:00", Color: defaultEventColor,
+	})
+	if err != nil {
+		t.Fatalf("create future task: %v", err)
+	}
+	seedChatSummaryKey(t, service, historical.ID, "quarterly-summary")
+	seedChatSummaryKey(t, service, future.ID, "quarterly-summary")
+
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-quarter"}, []ChatChange{{
+		Source:  chatTestEvidence("msg-quarter", "thread-1", "Planning", now),
+		TaskKey: "quarterly-summary",
+		Title:   "Quarterly summary",
+		Phase:   PhaseTodo,
+	}})
+	if err != nil || counts.Created != 1 || counts.Updated != 0 || counts.Pending != 0 {
+		t.Fatalf("historical/future canonical match: counts=%#v err=%v", counts, err)
+	}
+	events, err := service.GetEventsByDateRange(ctx, day, day)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("new current task = %#v err=%v", events, err)
+	}
+	if events[0].ID == historical.ID || events[0].ID == future.ID {
+		t.Fatalf("canonical match retargeted an unrelated card: %#v", events[0])
+	}
+	if old, err := eventByID(ctx, service.db, historical.ID); err != nil ||
+		old.Phase != PhaseDone || old.Result != result || old.Title != "Quarterly summary" {
+		t.Fatalf("historical card changed: %#v err=%v", old, err)
+	}
+	if planned, err := eventByID(ctx, service.db, future.ID); err != nil ||
+		planned.Start != "2026-03-03T00:00:00" || planned.Phase != PhaseTodo {
+		t.Fatalf("future card changed: %#v err=%v", planned, err)
+	}
+}
+
+func TestChatCanonicalKeyMatchesCarriedOpenCard(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	carried, err := service.CreateEvent(ctx, EventInput{
+		Title: "Carry summary", Start: "2026-03-01T00:00:00", Color: defaultEventColor,
+		Phase: PhaseProgressing,
+	})
+	if err != nil {
+		t.Fatalf("create carried task: %v", err)
+	}
+	seedChatSummaryKey(t, service, carried.ID, "carry-summary")
+
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-carried-key"}, []ChatChange{{
+		Source:  chatTestEvidence("msg-carried-key", "thread-2", "Planning", now),
+		TaskKey: "carry-summary",
+		Title:   "Carry summary",
+		Phase:   PhaseProgressing,
+		Result:  "Draft ready for review.",
+	}})
+	if err != nil || counts.Updated != 1 || counts.Created != 0 || counts.Pending != 0 {
+		t.Fatalf("carried canonical match: counts=%#v err=%v", counts, err)
+	}
+	board, err := service.GetBoardEvents(ctx, day)
+	if err != nil || len(board) != 1 || board[0].ID != carried.ID {
+		t.Fatalf("carried canonical match duplicated the card: %#v err=%v", board, err)
+	}
+}
+
+func TestChatCanonicalKeyProtectsManualConflicts(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	created, err := service.CreateEvent(ctx, EventInput{
+		Title: "Protected summary", Start: day + "T00:00:00", Color: defaultEventColor,
+		Description: "human text", Phase: PhaseProgressing,
+	})
+	if err != nil {
+		t.Fatalf("create protected task: %v", err)
+	}
+	seedChatSummaryKey(t, service, created.ID, "protected-summary")
+
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-protected"}, []ChatChange{{
+		Source:      chatTestEvidence("msg-protected", "thread-2", "Planning", now),
+		TaskKey:     "protected-summary",
+		Title:       "Protected summary",
+		Phase:       PhaseProgressing,
+		Description: "AI text",
+	}})
+	if err != nil || counts.Pending != 1 || counts.Updated != 0 || counts.Created != 0 {
+		t.Fatalf("protected canonical match: counts=%#v err=%v", counts, err)
+	}
+	pending := pendingChatActivity(t, service)
+	if pending.Change.EventID != created.ID || !strings.Contains(pending.Reason, "description") {
+		t.Fatalf("protected pending activity = %#v", pending)
 	}
 	event, err := eventByID(ctx, service.db, created.ID)
-	if err != nil || event.WorkspaceID != 2 {
-		t.Fatalf("workspace conflict moved the task: %#v err=%v", event, err)
+	if err != nil || event.Description != "human text" {
+		t.Fatalf("canonical match overwrote the manual description: %#v err=%v", event, err)
+	}
+}
+
+func TestChatCanonicalKeyDowngradeOfDoneCardQueuesReview(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	result := "shipped"
+	created, err := service.CreateEvent(ctx, EventInput{
+		Title: "Shipped summary", Start: day + "T00:00:00", Color: defaultEventColor,
+		Phase: PhaseDone, Result: &result,
+	})
+	if err != nil {
+		t.Fatalf("create done task: %v", err)
+	}
+	seedChatSummaryKey(t, service, created.ID, "shipped-summary")
+
+	counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-downgrade"}, []ChatChange{{
+		Source:  chatTestEvidence("msg-downgrade", "thread-2", "Planning", now),
+		TaskKey: "shipped-summary",
+		Title:   "Shipped summary",
+		Phase:   PhaseTodo,
+	}})
+	if err != nil || counts.Pending != 1 || counts.Updated != 0 || counts.Created != 0 {
+		t.Fatalf("done downgrade: counts=%#v err=%v", counts, err)
+	}
+	pending := pendingChatActivity(t, service)
+	if pending.Change.EventID != created.ID || !strings.Contains(pending.Reason, "reopen") {
+		t.Fatalf("done downgrade pending = %#v", pending)
+	}
+	event, err := eventByID(ctx, service.db, created.ID)
+	if err != nil || event.Phase != PhaseDone || event.Result != result {
+		t.Fatalf("done downgrade changed the card: %#v err=%v", event, err)
+	}
+}
+
+func TestChatUpdateKeepsFirstCanonicalKey(t *testing.T) {
+	service := testService(t)
+	now := boardTestTime(2026, time.March, 2)
+	service.now = func() time.Time { return now }
+	ctx := context.Background()
+	day := "2026-03-02"
+
+	first := ChatChange{
+		Source:  chatTestEvidence("msg-first-key", "thread-1", "Planning", now),
+		TaskKey: "first-key",
+		Title:   "Stable key task",
+		Phase:   PhaseTodo,
+	}
+	if counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-first-key"}, []ChatChange{first}); err != nil || counts.Created != 1 {
+		t.Fatalf("create keyed task: counts=%#v err=%v", counts, err)
+	}
+	events, err := service.GetEventsByDateRange(ctx, day, day)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("keyed task events = %#v err=%v", events, err)
+	}
+	eventID := events[0].ID
+
+	second := ChatChange{
+		Source:  chatTestEvidence("msg-second-key", "thread-2", "Planning", now.Add(time.Minute)),
+		TaskKey: "second-key",
+		EventID: eventID,
+		Title:   "Stable key task",
+		Phase:   PhaseProgressing,
+	}
+	if counts, err := service.ApplyChatPlan(ctx, day, []string{"msg-second-key"}, []ChatChange{second}); err != nil || counts.Updated != 1 {
+		t.Fatalf("update keyed task: counts=%#v err=%v", counts, err)
+	}
+	var taskKey string
+	if err := service.db.QueryRow("SELECT task_key FROM chat_summary_keys WHERE event_id = ?", eventID).Scan(&taskKey); err != nil {
+		t.Fatalf("read canonical key: %v", err)
+	}
+	if taskKey != "first-key" {
+		t.Fatalf("canonical key = %q, want the first stable key", taskKey)
 	}
 }
 
@@ -856,7 +1115,7 @@ func TestChatProtectsManualClearsPhaseAndTitle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			change := ChatChange{Source: chatTestEvidence("note", "session", "Export", now.Add(-time.Minute)), TaskKey: "export", EventID: current.ID, WorkspaceID: 1, Title: current.Title, Phase: PhaseProgressing}
+			change := ChatChange{Source: chatTestEvidence("note", "session", "Export", now.Add(-time.Minute)), TaskKey: "export", EventID: current.ID, Title: current.Title, Phase: PhaseProgressing}
 			switch field {
 			case "description":
 				input := eventTestInput(*current)

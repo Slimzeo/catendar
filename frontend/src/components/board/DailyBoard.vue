@@ -9,7 +9,6 @@ import { useCalendarStore } from '@/stores/calendar'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
 import { useSyncSourcesStore } from '@/stores/syncSources'
-import { useWorkspacesStore } from '@/stores/workspaces'
 import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
 
@@ -24,14 +23,11 @@ const emit = defineEmits<{
 const calendarStore = useCalendarStore()
 const eventsStore = useEventsStore()
 const themeStore = useThemeStore()
-const workspacesStore = useWorkspacesStore()
 const syncSources = useSyncSourcesStore()
 const message = useMessage()
 
 const selectedDate = computed(() => calendarStore.focusedDate)
-const workspaceId = computed(() => workspacesStore.selectedId)
 const dayEvents = computed(() => eventsStore.boardEventsForDay(selectedDate.value))
-const showWorkspaceLabels = computed(() => workspacesStore.selectedId === 0)
 
 const columns = computed(() => eventPhases.map(phase => ({
   phase,
@@ -59,10 +55,8 @@ const quickPhase = ref<EventPhase | null>(null)
 const quickTitle = ref('')
 const quickError = ref('')
 const quickSaving = ref(false)
-const quickWorkspaceId = ref(1)
 const quickInput = ref<HTMLInputElement | null>(null)
 const addButtons = new Map<EventPhase, HTMLButtonElement>()
-const selectionSuspended = ref(false)
 let quickToken = 0
 
 function setQuickInput(element: unknown) {
@@ -127,23 +121,10 @@ watch(selectedDate, () => {
   openPhaseId.value = null
   activePhase.value = 'todo'
   selectedId.value = null
-  selectionSuspended.value = false
   for (const phase of eventPhases) lastColumnIds[phase] = []
   phaseMoveToken += 1
   phaseMoveId.value = null
   if (quickPhase.value) closeQuick()
-})
-
-watch(workspaceId, () => {
-  openPhaseId.value = null
-  selectedId.value = null
-  selectionSuspended.value = true
-  for (const phase of eventPhases) lastColumnIds[phase] = []
-  phaseMoveToken += 1
-  phaseMoveId.value = null
-  draggingId.value = null
-  dragTarget.value = null
-  if (quickPhase.value) discardQuick()
 })
 
 watch(
@@ -179,7 +160,6 @@ onBeforeUnmount(() => {
 
 function openQuick(phase: EventPhase) {
   if (quickSaving.value) return
-  selectionSuspended.value = false
   if (phase !== activePhase.value) {
     activePhase.value = phase
     selectedId.value = firstEventId(phase)
@@ -189,7 +169,6 @@ function openQuick(phase: EventPhase) {
     return
   }
   quickToken += 1
-  quickWorkspaceId.value = workspacesStore.createWorkspaceId
   quickPhase.value = phase
   quickTitle.value = ''
   quickError.value = ''
@@ -226,7 +205,6 @@ async function submitQuick() {
   }
 
   const createDate = selectedDate.value
-  const createWorkspace = quickWorkspaceId.value
   const token = quickToken
   quickSaving.value = true
   try {
@@ -240,12 +218,11 @@ async function submitQuick() {
       bold: false,
       phase,
       deadline: '',
-      boardDay: createDate,
-      workspaceId: createWorkspace
+      boardDay: createDate
     }
     const created = await eventsStore.createEvent(input)
     if (token !== quickToken) return
-    if (selectedDate.value === createDate && workspacesStore.showsWorkspace(createWorkspace)) {
+    if (selectedDate.value === createDate) {
       activePhase.value = created.phase
       selectedId.value = created.id
     }
@@ -404,10 +381,6 @@ function captureColumnIds(): Record<EventPhase, number[]> {
 
 function reconcileSelection() {
   const ids = captureColumnIds()
-  if (selectionSuspended.value && selectedId.value == null) {
-    for (const phase of eventPhases) lastColumnIds[phase] = ids[phase]
-    return
-  }
   const id = selectedId.value
 
   if (id != null) {
@@ -433,7 +406,6 @@ function reconcileSelection() {
 }
 
 function selectEvent(calendarEvent: CalendarEvent) {
-  selectionSuspended.value = false
   activePhase.value = calendarEvent.phase
   selectedId.value = calendarEvent.id
 }
@@ -467,7 +439,6 @@ function syncSelectionFromFocus(target: EventTarget | null) {
   if (!column) return
   const phase = column.dataset.phase
   if (!isEventPhase(phase)) return
-  selectionSuspended.value = false
 
   const card = target.closest<HTMLElement>('[data-task-id]')
   if (card) {
@@ -490,7 +461,6 @@ function cancelQuickAdd() {
 }
 
 function moveColumn(direction: -1 | 1) {
-  selectionSuspended.value = false
   const nextIndex = eventPhases.indexOf(activePhase.value) + direction
   if (nextIndex >= 0 && nextIndex < eventPhases.length) {
     activePhase.value = eventPhases[nextIndex]
@@ -500,7 +470,6 @@ function moveColumn(direction: -1 | 1) {
 }
 
 function moveTask(direction: -1 | 1) {
-  selectionSuspended.value = false
   const events = eventsForPhase(activePhase.value)
   if (!events.length) return
   const index = events.findIndex(event => event.id === selectedId.value)
@@ -510,7 +479,6 @@ function moveTask(direction: -1 | 1) {
 }
 
 function selectTaskPosition(position: number) {
-  selectionSuspended.value = false
   const target = eventsForPhase(activePhase.value)[position - 1]
   if (!target) return
   selectedId.value = target.id
@@ -702,9 +670,6 @@ defineExpose({
           @dragstart="startDrag($event, calendarEvent)"
           @dragend="endDrag"
         >
-          <span v-if="showWorkspaceLabels" class="workspace-label">
-            {{ workspacesStore.workspaceName(calendarEvent.workspaceId) }}
-          </span>
           <h3 :class="{ bold: calendarEvent.bold }">
             <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
           </h3>
@@ -1038,20 +1003,6 @@ defineExpose({
   font-size: 13.5px;
   font-weight: 600;
   line-height: 1.35;
-}
-
-.workspace-label {
-  display: block;
-  margin-bottom: 1px;
-  overflow: hidden;
-  color: var(--primary-color);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
 }
 
 .card h3.bold {
