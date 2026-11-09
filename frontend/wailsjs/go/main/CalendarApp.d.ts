@@ -6,7 +6,11 @@ export function CreateEvent(arg1:calendar.EventInput):Promise<calendar.Event>;
 
 export function DeleteEvent(arg1:number):Promise<void>;
 
+export function GetBoardEvents(arg1:string):Promise<Array<calendar.Event>>;
+
 export function GetEvents(arg1:string,arg2:string):Promise<Array<calendar.Event>>;
+
+export function SetBoardEventPhase(arg1:number,arg2:string,arg3:string):Promise<calendar.Event>;
 
 export function SetEventPhase(arg1:number,arg2:string):Promise<calendar.Event>;
 

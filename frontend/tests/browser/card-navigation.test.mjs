@@ -22,7 +22,8 @@ function seedBoard() {
   window.go = { main: {
     CalendarApp: {
       GetEvents: async () => rows,
-      SetEventPhase: async (id, phase) => {
+      GetBoardEvents: async () => rows,
+      SetBoardEventPhase: async (id, phase) => {
         const row = rows.find(task => task.id === id)
         window.phaseWrites.push([id, phase])
         row.phase = phase
@@ -45,6 +46,7 @@ for (const engine of [webkit, chromium]) {
       const title = id => card(id).getByRole('button', { name: `Task ${id}`, exact: true })
       const trigger = id => card(id).getByLabel(new RegExp(`^Move Task ${id} to another phase`))
       const press = key => page.keyboard.press(key)
+      const phaseModifier = await page.evaluate(() => /^Mac/i.test(navigator.platform) ? 'Alt' : 'Control')
       const selected = (id, phase = 'todo') => page.locator(
         `section[data-phase="${phase}"][data-active="true"] article[data-task-id="${id}"][data-selected="true"]`
       ).waitFor()
@@ -100,9 +102,11 @@ for (const engine of [webkit, chromium]) {
       await card(1).getByRole('button', { name: 'done', exact: true }).click()
       await selected(1, 'done')
       await trigger(1).focus()
-      await press('Control+ArrowLeft')
+      await press(phaseModifier + '+ArrowLeft')
       await selected(1, 'progressing')
-      assert.deepEqual(await writes(), [[1, 'done'], [1, 'progressing']])
+      await press(phaseModifier + '+ArrowRight')
+      await selected(1, 'done')
+      assert.deepEqual(await writes(), [[1, 'done'], [1, 'progressing'], [1, 'done']])
 
       await page.evaluate(() => localStorage.setItem('catendar-shortcuts-v1', JSON.stringify({ taskDown: 'J' })))
       await page.reload()
@@ -124,6 +128,50 @@ for (const engine of [webkit, chromium]) {
       await switchColumn('ArrowLeft', 'progressing')
       await switchColumn('ArrowLeft', 'todo')
       await selected(1)
+    } finally {
+      await browser.close()
+    }
+  })
+
+  test(`${engine.name()} refreshes the board at local midnight and edits the carried task by ID`, async () => {
+    const browser = await engine.launch()
+    try {
+      const page = await browser.newPage({ timezoneId: 'Asia/Singapore' })
+      await page.clock.install({ time: new Date('2026-01-31T23:50:00+08:00') })
+      await page.addInitScript(() => {
+        const card = { id: 42, title: 'Prepare agenda', start: '2026-01-03T00:00:00',
+          allDay: true, phase: 'progressing', description: '', color: '#7663b5' }
+        const today = '2026-02-01'
+        let phase = card.phase
+        window.boardWrites = []
+        window.go = { main: {
+          CalendarApp: {
+            GetEvents: async () => [],
+            GetBoardEvents: async day => [{ ...card, phase: day === today ? phase : card.phase }],
+            SetBoardEventPhase: async (id, next, day) => {
+              window.boardWrites.push([id, next, day])
+              phase = next
+              return { ...card, phase }
+            }
+          },
+          AISyncApp: { GetAISyncStatus: async () => ({ state: 'idle' }) }
+        } }
+      })
+      await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
+      const cardIn = phase => page.locator(`section[data-phase="${phase}"] article[data-task-id="42"]`)
+      await cardIn('progressing').waitFor()
+      await page.clock.fastForward(11 * 60 * 1000)
+      await page.getByRole('heading', { name: /Feb 1/ }).waitFor()
+      await cardIn('progressing').getByRole('button', { name: 'Prepare agenda', exact: true }).focus()
+      const modifier = await page.evaluate(() => /^Mac/i.test(navigator.platform) ? 'Alt' : 'Control')
+      await page.keyboard.press(modifier + '+ArrowRight')
+      await cardIn('done').waitFor()
+      assert.deepEqual(await page.evaluate(() => window.boardWrites), [[42, 'done', '2026-02-01']])
+      await page.getByRole('button', { name: 'Previous day' }).click()
+      await cardIn('progressing').waitFor()
+      await page.getByRole('button', { name: 'Next day' }).click()
+      await cardIn('done').waitFor()
+      assert.equal(await page.locator('article[data-task-id="42"]').count(), 1)
     } finally {
       await browser.close()
     }

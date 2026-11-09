@@ -27,6 +27,7 @@ export interface EventInput {
   bold: boolean
   phase?: EventPhase
   deadline?: string
+  boardDay?: string
 }
 
 export interface DayCell {

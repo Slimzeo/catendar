@@ -18,6 +18,14 @@ func (a *CalendarApp) GetEvents(start, end string) ([]calendar.Event, error) {
 	return a.calendar.GetEventsByDateRange(context.Background(), start, end)
 }
 
+func (a *CalendarApp) GetBoardEvents(day string) ([]calendar.Event, error) {
+	return a.calendar.GetBoardEvents(context.Background(), day)
+}
+
+func (a *CalendarApp) SetBoardEventPhase(id int64, phase string, day string) (*calendar.Event, error) {
+	return a.calendar.SetBoardEventPhase(context.Background(), id, phase, day)
+}
+
 func (a *CalendarApp) CreateEvent(input calendar.EventInput) (*calendar.Event, error) {
 	return a.calendar.CreateEvent(context.Background(), input)
 }

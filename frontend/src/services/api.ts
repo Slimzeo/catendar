@@ -12,7 +12,15 @@ import type {
 import { isEventPhase } from '@/constants/eventPhases'
 
 // Wails generates individual functions in frontend/wailsjs/go/main/CalendarApp
-import { GetEvents, CreateEvent, UpdateEvent, DeleteEvent, SetEventPhase } from '../../wailsjs/go/main/CalendarApp'
+import {
+  GetEvents,
+  GetBoardEvents,
+  CreateEvent,
+  UpdateEvent,
+  DeleteEvent,
+  SetEventPhase,
+  SetBoardEventPhase
+} from '../../wailsjs/go/main/CalendarApp'
 import {
   CancelAISync,
   GetAISyncSetup,
@@ -39,6 +47,12 @@ export const eventApi = {
     return events.map(normalizeEvent)
   },
 
+  getBoardEvents: async (day: string): Promise<CalendarEvent[]> => {
+    if (!('go' in window)) return []
+    const events = await GetBoardEvents(day)
+    return events.map(normalizeEvent)
+  },
+
   createEvent: async (input: EventInput): Promise<CalendarEvent> => {
     const created = await CreateEvent(input)
     return normalizeEvent(created)
@@ -51,6 +65,11 @@ export const eventApi = {
 
   setEventPhase: async (id: number, phase: EventPhase): Promise<CalendarEvent> => {
     const updated = await SetEventPhase(id, phase)
+    return normalizeEvent(updated)
+  },
+
+  setBoardEventPhase: async (id: number, phase: EventPhase, day: string): Promise<CalendarEvent> => {
+    const updated = await SetBoardEventPhase(id, phase, day)
     return normalizeEvent(updated)
   },
 

@@ -8,6 +8,15 @@ export const SHORTCUT_GROUP_LABELS = {
 
 export type ShortcutGroupId = keyof typeof SHORTCUT_GROUP_LABELS
 
+const macKeyboard = /^Mac/i.test(globalThis.navigator?.platform ?? '')
+
+export function defaultPhaseShortcuts(mac = macKeyboard) {
+  const modifier = mac ? 'Alt' : 'Ctrl'
+  return { phaseLeft: `${modifier}+ArrowLeft`, phaseRight: `${modifier}+ArrowRight` }
+}
+
+const phaseDefaults = defaultPhaseShortcuts()
+
 export const SHORTCUT_DEFINITIONS = [
   { action: 'columnLeft', label: 'Previous column', group: 'navigation', defaultChord: 'Tab+ArrowLeft' },
   { action: 'columnRight', label: 'Next column', group: 'navigation', defaultChord: 'Tab+ArrowRight' },
@@ -27,8 +36,8 @@ export const SHORTCUT_DEFINITIONS = [
   { action: 'deleteTask', label: 'Delete task', group: 'actions', defaultChord: 'D' },
   { action: 'confirmDelete', label: 'Confirm delete', group: 'dialogs', defaultChord: 'Ctrl+D' },
   { action: 'editDescription', label: 'Edit description', group: 'actions', defaultChord: 'U' },
-  { action: 'phaseLeft', label: 'Previous phase', group: 'date', defaultChord: 'Ctrl+ArrowLeft' },
-  { action: 'phaseRight', label: 'Next phase', group: 'date', defaultChord: 'Ctrl+ArrowRight' },
+  { action: 'phaseLeft', label: 'Previous phase', group: 'date', defaultChord: phaseDefaults.phaseLeft },
+  { action: 'phaseRight', label: 'Next phase', group: 'date', defaultChord: phaseDefaults.phaseRight },
   { action: 'previousDate', label: 'Previous date', group: 'date', defaultChord: 'ArrowLeft' },
   { action: 'nextDate', label: 'Next date', group: 'date', defaultChord: 'ArrowRight' },
   { action: 'today', label: 'Today', group: 'date', defaultChord: 'T' },
@@ -108,7 +117,7 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent, tabHeld = false)
 }
 
 export function formatShortcut(chord: string): string {
-  return chord.split('+').map(part => keyLabels[part] ?? part).join(' + ')
+  return chord.split('+').map(part => part === 'Alt' && macKeyboard ? 'Option' : keyLabels[part] ?? part).join(' + ')
 }
 
 export function shortcutLabel(action: ShortcutAction): string {

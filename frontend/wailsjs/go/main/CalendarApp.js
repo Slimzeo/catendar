@@ -10,8 +10,16 @@ export function DeleteEvent(arg1) {
   return window['go']['main']['CalendarApp']['DeleteEvent'](arg1);
 }
 
+export function GetBoardEvents(arg1) {
+  return window['go']['main']['CalendarApp']['GetBoardEvents'](arg1);
+}
+
 export function GetEvents(arg1, arg2) {
   return window['go']['main']['CalendarApp']['GetEvents'](arg1, arg2);
+}
+
+export function SetBoardEventPhase(arg1, arg2, arg3) {
+  return window['go']['main']['CalendarApp']['SetBoardEventPhase'](arg1, arg2, arg3);
 }
 
 export function SetEventPhase(arg1, arg2) {

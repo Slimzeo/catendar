@@ -1,147 +1,145 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { format } from 'date-fns'
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { randomEventColor } from '@/constants/eventColors'
 import { eventApi } from '@/services/api'
-import { useCalendarStore } from './calendar'
+import { useCalendarStore } from '@/stores/calendar'
 
 export const useEventsStore = defineStore('events', () => {
+  const calendar = useCalendarStore()
   const events = ref<CalendarEvent[]>([])
   const nextCreateColor = ref(randomEventColor())
   const loading = ref(false)
   const error = ref<string | null>(null)
-  const loadedStart = ref('')
-  const loadedEnd = ref('')
-  const movingIds = ref<number[]>([])
+  const scope = computed(() => calendar.viewMode === 'board'
+    ? `board/${calendar.focusedDate}` : `month/${calendar.currentMonth}`)
+  const loadedScope = ref('')
+  const moves = reactive(new Map<number, { scope: string; phase: EventPhase }>())
   let latestFetch = 0
+
+  function boardEventsForDay(day: string): CalendarEvent[] {
+    return loadedScope.value === `board/${day}` ? events.value : []
+  }
 
   const eventsByDate = computed(() => {
     const map: Record<string, CalendarEvent[]> = {}
-    const eventList = events.value || []
-    for (const event of eventList) {
-      const key = event.start.split('T')[0].split(' ')[0]
-      if (!map[key]) map[key] = []
-      map[key].push(event)
+    if (calendar.viewMode !== 'month' || loadedScope.value !== scope.value) return map
+    for (const event of events.value) {
+      const day = event.start.slice(0, 10)
+      if (!map[day]) map[day] = []
+      map[day].push(event)
     }
     return map
   })
 
-  async function fetchEvents() {
-    const calendarStore = useCalendarStore()
-    const start = format(calendarStore.visibleStart, 'yyyy-MM-dd')
-    const end = format(calendarStore.visibleEnd, 'yyyy-MM-dd')
-    const fetchId = ++latestFetch
+  function detail(cause: unknown, fallback: string) {
+    return cause instanceof Error ? cause.message : typeof cause === 'string' && cause ? cause : fallback
+  }
 
-    if (start !== loadedStart.value || end !== loadedEnd.value) {
-      loadedStart.value = start
-      loadedEnd.value = end
+  async function fetchEvents() {
+    const key = scope.value
+    const request = ++latestFetch
+    if (loadedScope.value !== key) {
+      loadedScope.value = key
       events.value = []
     }
-
     loading.value = true
     error.value = null
     try {
-      const result = await eventApi.getEvents(start, end)
-      if (fetchId === latestFetch) events.value = result
-    } catch (e) {
-      if (fetchId === latestFetch) {
-        error.value = e instanceof Error ? e.message : 'Failed to fetch events'
+      const rows = calendar.viewMode === 'board'
+        ? await eventApi.getBoardEvents(calendar.focusedDate)
+        : await eventApi.getEvents(format(calendar.visibleStart, 'yyyy-MM-dd'), format(calendar.visibleEnd, 'yyyy-MM-dd'))
+      if (request === latestFetch && key === scope.value) {
+        events.value = rows.map(row => {
+          const move = moves.get(row.id)
+          return move?.scope === key ? { ...row, phase: move.phase } : row
+        })
       }
+    } catch (cause) {
+      if (request === latestFetch) error.value = detail(cause, 'Could not load the tasks')
     } finally {
-      if (fetchId === latestFetch) loading.value = false
+      if (request === latestFetch) loading.value = false
     }
   }
 
-  function refreshAfterMutation() {
-    if (loading.value) void fetchEvents()
+  function replaceInView(event: CalendarEvent) {
+    const index = events.value.findIndex(item => item.id === event.id)
+    if (index >= 0) events.value[index] = event
   }
 
-  async function createEvent(input: EventInput): Promise<CalendarEvent> {
+  async function createEvent(input: EventInput) {
+    const key = scope.value
     try {
-      const newEvent = await eventApi.createEvent(input)
-      nextCreateColor.value = randomEventColor(newEvent.color)
-      if (!events.value.some(event => event.id === newEvent.id)) {
-        events.value.push(newEvent)
+      const created = await eventApi.createEvent(input)
+      nextCreateColor.value = randomEventColor(created.color)
+      if (scope.value === key && loadedScope.value === key &&
+          (!input.boardDay || (key === `board/${input.boardDay}` && input.start.slice(0, 10) === input.boardDay)) &&
+          !events.value.some(item => item.id === created.id)) {
+        events.value.push(created)
       }
-      error.value = null
-      refreshAfterMutation()
-      return newEvent
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create event'
-      throw e
+      void fetchEvents()
+      return created
+    } catch (cause) {
+      error.value = detail(cause, 'Could not create the task')
+      throw cause
     }
   }
 
-  async function updateEvent(id: number, input: EventInput): Promise<CalendarEvent> {
+  async function updateEvent(id: number, input: EventInput) {
+    const key = scope.value
     try {
       const updated = await eventApi.updateEvent(id, input)
-      const index = events.value.findIndex(e => e.id === id)
-      if (index !== -1) {
-        events.value[index] = updated
-      }
-      error.value = null
-      refreshAfterMutation()
+      if (scope.value === key && loadedScope.value === key &&
+          (!input.boardDay || key === `board/${input.boardDay}`)) replaceInView(updated)
+      // A reschedule or a change made across midnight can alter membership.
+      void fetchEvents()
       return updated
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to update event'
-      throw e
+    } catch (cause) {
+      error.value = detail(cause, 'Could not update the task')
+      throw cause
     }
   }
 
-  async function setEventPhase(id: number, phase: EventPhase): Promise<CalendarEvent | undefined> {
-    const event = events.value.find(item => item.id === id)
-    if (!event || event.phase === phase || movingIds.value.includes(id)) return event
-
-    const index = events.value.findIndex(item => item.id === id)
-    events.value[index] = { ...event, phase }
-    movingIds.value.push(id)
-
+  async function setEventPhase(id: number, phase: EventPhase, boardDay?: string) {
+    const key = scope.value
+    if (loadedScope.value !== key || (boardDay && key !== `board/${boardDay}`)) return
+    const previous = events.value.find(item => item.id === id)
+    if (!previous || previous.phase === phase || moves.has(id)) return previous
+    moves.set(id, { scope: key, phase })
+    replaceInView({ ...previous, phase })
     try {
-      const updated = await eventApi.setEventPhase(id, phase)
-      const currentIndex = events.value.findIndex(item => item.id === id)
-      if (currentIndex !== -1) events.value[currentIndex] = updated
-      error.value = null
-      refreshAfterMutation()
-      return updated
-    } catch (e) {
-      const currentIndex = events.value.findIndex(item => item.id === id)
-      if (currentIndex !== -1) {
-        events.value[currentIndex] = { ...events.value[currentIndex], phase: event.phase }
+      const saved = boardDay
+        ? await eventApi.setBoardEventPhase(id, phase, boardDay)
+        : await eventApi.setEventPhase(id, phase)
+      if (scope.value === key && loadedScope.value === key) replaceInView(saved)
+      void fetchEvents()
+      return saved
+    } catch (cause) {
+      if (scope.value === key && loadedScope.value === key) {
+        const row = events.value.find(item => item.id === id)
+        if (row) replaceInView({ ...row, phase: previous.phase })
       }
-      error.value = e instanceof Error ? e.message : 'Failed to move event'
-      throw e
+      error.value = detail(cause, 'Could not move the task')
+      throw cause
     } finally {
-      movingIds.value = movingIds.value.filter(item => item !== id)
+      moves.delete(id)
     }
   }
 
-  async function deleteEvent(id: number): Promise<void> {
+  async function deleteEvent(id: number) {
     try {
       await eventApi.deleteEvent(id)
-      events.value = events.value.filter(e => e.id !== id)
-      error.value = null
-      refreshAfterMutation()
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete event'
-      throw e
+      events.value = events.value.filter(item => item.id !== id)
+      void fetchEvents()
+    } catch (cause) {
+      error.value = detail(cause, 'Could not delete the task')
+      throw cause
     }
-  }
-
-  function isMoving(id: number): boolean {
-    return movingIds.value.includes(id)
   }
 
   return {
-    nextCreateColor,
-    loading,
-    error,
-    eventsByDate,
-    fetchEvents,
-    createEvent,
-    updateEvent,
-    setEventPhase,
-    deleteEvent,
-    isMoving
+    scope, nextCreateColor, loading, error, eventsByDate, boardEventsForDay,
+    fetchEvents, createEvent, updateEvent, setEventPhase, deleteEvent, isMoving: (id: number) => moves.has(id)
   }
 })
