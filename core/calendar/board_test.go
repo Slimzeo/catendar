@@ -453,3 +453,57 @@ func mustBoard(t *testing.T, service *Service, day string) []Event {
 	}
 	return events
 }
+
+func TestConsolidatedStepsAreHiddenOnlyFromTheirEffectiveDay(t *testing.T) {
+	service := testService(t)
+	ctx := context.Background()
+	now := boardTestTime(2026, time.March, 1)
+	service.now = func() time.Time { return now }
+	create := func(title, start string) int64 {
+		card, err := service.CreateEvent(ctx, EventInput{Title: title, Start: start + "T00:00:00", Phase: PhaseProgressing})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return card.ID
+	}
+	pastStep := create("Earlier project detail", "2026-03-01")
+	now = now.AddDate(0, 0, 1)
+	today := now.Format(dateLayout)
+	newStep := create("Today's project detail", today)
+	summary := create("Deliver the project", today)
+	for _, child := range []int64{pastStep, newStep} {
+		if _, err := service.db.Exec("INSERT INTO board_consolidations(event_id,summary_id,from_day) VALUES(?,?,?)", child, summary, today); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkDay := func(day string, want ...int64) {
+		t.Helper()
+		cards, err := service.GetBoardEvents(ctx, day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cards) != len(want) {
+			t.Fatalf("day %s has %d cards, want %v", day, len(cards), want)
+		}
+		for i, id := range want {
+			if cards[i].ID != id {
+				t.Fatalf("day %s: wrong card %d", day, cards[i].ID)
+			}
+		}
+	}
+	checkDay("2026-03-01", pastStep)
+	checkDay(today, summary)
+	calendar, err := service.GetEventsByDateRange(ctx, "2026-03-01", today)
+	if err != nil || len(calendar) != 2 || calendar[0].ID != pastStep || calendar[1].ID != summary {
+		t.Fatalf("month exposed a folded step: %+v, %v", calendar, err)
+	}
+	plans, err := service.GetChatPlanningEvents(ctx, today)
+	if err != nil || len(plans) != 1 || plans[0].ID != summary {
+		t.Fatalf("planner exposed a folded step: %+v, %v", plans, err)
+	}
+	if err := service.DeleteEvent(ctx, summary); err != nil {
+		t.Fatal(err)
+	}
+	checkDay(today)
+	checkDay("2026-03-01", pastStep)
+}

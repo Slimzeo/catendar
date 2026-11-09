@@ -1,14 +1,5 @@
 package calendar
 
-// Workspace zero is the aggregate UI view. Persisted tasks always have a real workspace.
-const RoutineWorkspaceID int64 = 1
-
-type Workspace struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Hint string `json:"hint"`
-}
-
 // ChatEvidence contains only the referenced public message and its conversation.
 // The raw transcript and tool payloads are never part of the calendar database.
 type ChatEvidence struct {
@@ -23,7 +14,6 @@ type ChatChange struct {
 	Source      ChatEvidence `json:"source"`
 	TaskKey     string       `json:"taskKey"`
 	EventID     int64        `json:"eventId"`
-	WorkspaceID int64        `json:"workspaceId"`
 	Title       string       `json:"title"`
 	Phase       string       `json:"phase"`
 	Description string       `json:"description"`

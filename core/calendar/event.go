@@ -35,7 +35,7 @@ type Event struct {
 	Bold        bool      `json:"bold"`
 	Phase       string    `json:"phase"`
 	Deadline    string    `json:"deadline,omitempty"`
-	WorkspaceID int64     `json:"workspaceId"`
+	SummaryKey  string    `json:"-"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
@@ -52,7 +52,6 @@ type EventInput struct {
 	Phase       string  `json:"phase,omitempty"`
 	Deadline    *string `json:"deadline,omitempty"`
 	BoardDay    string  `json:"boardDay,omitempty"`
-	WorkspaceID int64   `json:"workspaceId,omitempty"`
 }
 
 type EmailEventInput struct {
@@ -95,6 +94,8 @@ func (s *Service) GetEventsByDateRange(ctx context.Context, start, end string) (
 		SELECT id, `+eventFields+`
 		FROM events
 		WHERE start >= ? AND start < date(?, '+1 day')
+		AND NOT EXISTS (SELECT 1 FROM board_consolidations m
+			WHERE m.event_id = events.id AND m.from_day <= substr(events.start, 1, 10))
 		ORDER BY start ASC
 	`, start, end)
 	if err != nil {
@@ -131,20 +132,14 @@ func (s *Service) CreateEvent(ctx context.Context, input EventInput) (*Event, er
 }
 
 func createEventTx(ctx context.Context, tx *sql.Tx, input EventInput, now time.Time) (Event, error) {
-	if input.WorkspaceID == 0 {
-		input.WorkspaceID = RoutineWorkspaceID
-	}
-	if err := validateWorkspace(ctx, tx, input.WorkspaceID); err != nil {
-		return Event{}, err
-	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO events (
 			title, start, end, color, all_day, description, result, bold, phase, deadline,
-			workspace_id, created_at, updated_at
+			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?, COALESCE(?, ''), ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?, COALESCE(?, ''), ?, ?)
 	`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
-		trimResult(input.Result), boolToInt(input.Bold), input.Phase, input.Deadline, input.WorkspaceID, now, now)
+		trimResult(input.Result), boolToInt(input.Bold), input.Phase, input.Deadline, now, now)
 	if err != nil {
 		return Event{}, fmt.Errorf("create event: %w", err)
 	}
@@ -180,11 +175,6 @@ func (s *Service) UpdateEvent(ctx context.Context, id int64, input EventInput) (
 	if err != nil {
 		return nil, err
 	}
-	if input.WorkspaceID != 0 {
-		if err := validateWorkspace(ctx, s.db, input.WorkspaceID); err != nil {
-			return nil, err
-		}
-	}
 	return s.changeEvent(ctx, id, input.BoardDay, func(event *Event) {
 		event.Title, event.Start, event.End = input.Title, input.Start, input.End
 		event.Color, event.AllDay, event.Bold = input.Color, input.AllDay, input.Bold
@@ -197,9 +187,6 @@ func (s *Service) UpdateEvent(ctx context.Context, id int64, input EventInput) (
 		}
 		if phase != "" {
 			event.Phase = phase
-		}
-		if input.WorkspaceID != 0 {
-			event.WorkspaceID = input.WorkspaceID
 		}
 	})
 }
@@ -279,11 +266,11 @@ func (s *Service) BatchCreateFromEmail(
 		insert, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO events (
 				title, start, end, color, all_day, description, bold, phase, deadline,
-				source_type, source_account_id, source_message_id, source_url, workspace_id,
+				source_type, source_account_id, source_message_id, source_url,
 				created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', '', 'email', ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', '', 'email', ?, ?, ?, ?, ?)
 		`, event.Title, event.Start, event.End, event.Color, boolToInt(event.AllDay), event.Description,
-			boolToInt(event.Bold), source.AccountID, source.MessageID, source.URL, RoutineWorkspaceID, now, now)
+			boolToInt(event.Bold), source.AccountID, source.MessageID, source.URL, now, now)
 		if err != nil {
 			return result, fmt.Errorf("insert email event %d: %w", index+1, err)
 		}
@@ -327,16 +314,17 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanEvent(row rowScanner) (Event, error) {
+func scanEvent(row rowScanner, extra ...any) (Event, error) {
 	var event Event
 	var allDay, bold int
 	var end, description, result, deadline sql.NullString
 	var createdAt, updatedAt sql.NullTime
-	if err := row.Scan(
+	fields := []any{
 		&event.ID, &event.Title, &event.Start, &end, &event.Color,
-		&allDay, &description, &result, &bold, &event.Phase, &deadline, &event.WorkspaceID,
+		&allDay, &description, &result, &bold, &event.Phase, &deadline,
 		&createdAt, &updatedAt,
-	); err != nil {
+	}
+	if err := row.Scan(append(fields, extra...)...); err != nil {
 		return Event{}, fmt.Errorf("scan event: %w", err)
 	}
 	event.AllDay = allDay == 1
@@ -389,9 +377,6 @@ func normalizeCreateInput(input EventInput, now time.Time) (EventInput, error) {
 	}
 	if !colorPattern.MatchString(input.Color) {
 		input.Color = defaultEventColor
-	}
-	if input.WorkspaceID == 0 {
-		input.WorkspaceID = RoutineWorkspaceID
 	}
 	return input, nil
 }

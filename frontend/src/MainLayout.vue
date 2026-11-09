@@ -5,7 +5,6 @@ import { NButton, useMessage } from 'naive-ui'
 import MonthlyCalendar from './components/calendar/MonthlyCalendar.vue'
 import AppToolbar from './components/common/AppToolbar.vue'
 import DailyBoard from './components/board/DailyBoard.vue'
-import WorkspaceBar from './components/board/WorkspaceBar.vue'
 import DayEventsDrawer from './components/event/DayEventsDrawer.vue'
 import DeleteEventDialog from './components/event/DeleteEventDialog.vue'
 import { isPlainEscape, type ShortcutAction } from './shortcuts'
@@ -14,7 +13,6 @@ import { useCalendarStore, type CalendarView } from './stores/calendar'
 import { useConversationSyncStore } from './stores/conversationSync'
 import { useEventsStore } from './stores/events'
 import { useSyncSourcesStore } from './stores/syncSources'
-import { useWorkspacesStore } from './stores/workspaces'
 import { aiSyncApi } from './services/api'
 import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput, EventPhase } from './types'
 
@@ -28,7 +26,6 @@ const EmailSourceModal = defineAsyncComponent(loadEmailSourceModal)
 const calendarStore = useCalendarStore()
 const sources = useSyncSourcesStore()
 const eventsStore = useEventsStore()
-const workspacesStore = useWorkspacesStore()
 const conversationStore = useConversationSyncStore()
 const message = useMessage()
 
@@ -37,7 +34,6 @@ const editingEvent = ref<CalendarEvent | null>(null)
 const defaultDate = ref('')
 const defaultTitle = ref('')
 const defaultPhase = ref<EventPhase>('todo')
-const defaultWorkspaceId = ref(1)
 const modalVariant = ref<'board' | 'calendar'>('calendar')
 const modalBoardDay = ref('')
 const savingEvent = ref(false)
@@ -45,7 +41,6 @@ const initialField = ref<'title' | 'description' | 'result'>('title')
 const board = ref<InstanceType<typeof DailyBoard> | null>(null)
 const boardQuickActive = ref(false)
 const pendingDelete = ref<CalendarEvent | null>(null)
-const workspaceDialogOpen = ref(false)
 
 const showSettings = ref(false)
 const settingsModal = ref<InstanceType<typeof SettingsModal> | null>(null)
@@ -127,7 +122,6 @@ function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo',
   defaultDate.value = date
   defaultTitle.value = title
   defaultPhase.value = phase
-  defaultWorkspaceId.value = workspacesStore.createWorkspaceId
   initialField.value = 'title'
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   modalBoardDay.value = modalVariant.value === 'board' ? date : ''
@@ -290,7 +284,7 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 const editingOrDeleting = computed(() => showEventModal.value || !!pendingDelete.value)
-const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value || workspaceDialogOpen.value)
+const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value)
 const repeatable = new Set<ShortcutAction>(['taskUp', 'taskDown', 'columnLeft', 'columnRight', 'previousDate', 'nextDate'])
 
 function wrapBoardTab(event: KeyboardEvent) {
@@ -306,8 +300,6 @@ function wrapBoardTab(event: KeyboardEvent) {
 }
 
 function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin: EventTarget | null): boolean {
-  // The project dialog has its own focus trap and native Escape handling.
-  if (workspaceDialogOpen.value) return false
   if (otherDialogOpen.value) {
     if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
     if (showSettings.value) return settingsModal.value?.dismiss() ?? false
@@ -397,7 +389,6 @@ watch([isAISyncing, () => sources.allowsRun('email', emailRunOrigin.value)], ([a
 })
 
 onMounted(() => {
-  void workspacesStore.fetchWorkspaces()
   eventsStore.fetchEvents()
   requestAnimationFrame(() => {
     void loadEventModal()
@@ -423,11 +414,6 @@ onUnmounted(() => {
       @create="openCreateModal()"
       @ai-sync="openAISync"
       @settings="openSettings('shortcuts')"
-    />
-
-    <workspace-bar
-      v-if="calendarStore.viewMode === 'board'"
-      @dialog-state="workspaceDialogOpen = $event"
     />
 
     <transition name="sync-status">
@@ -507,7 +493,6 @@ onUnmounted(() => {
       :default-title="defaultTitle"
       :default-color="eventsStore.nextCreateColor"
       :default-phase="defaultPhase"
-      :default-workspace-id="defaultWorkspaceId"
       :initial-focus="initialField"
       :variant="modalVariant"
       :saving="savingEvent"

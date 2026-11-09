@@ -6,10 +6,6 @@ export function CreateEvent(arg1) {
   return window['go']['main']['CalendarApp']['CreateEvent'](arg1);
 }
 
-export function CreateWorkspace(arg1, arg2) {
-  return window['go']['main']['CalendarApp']['CreateWorkspace'](arg1, arg2);
-}
-
 export function DeleteEvent(arg1) {
   return window['go']['main']['CalendarApp']['DeleteEvent'](arg1);
 }
@@ -22,10 +18,6 @@ export function GetEvents(arg1, arg2) {
   return window['go']['main']['CalendarApp']['GetEvents'](arg1, arg2);
 }
 
-export function ListWorkspaces() {
-  return window['go']['main']['CalendarApp']['ListWorkspaces']();
-}
-
 export function SetBoardEventPhase(arg1, arg2, arg3) {
   return window['go']['main']['CalendarApp']['SetBoardEventPhase'](arg1, arg2, arg3);
 }
@@ -36,8 +28,4 @@ export function SetEventPhase(arg1, arg2) {
 
 export function UpdateEvent(arg1, arg2) {
   return window['go']['main']['CalendarApp']['UpdateEvent'](arg1, arg2);
-}
-
-export function UpdateWorkspace(arg1, arg2, arg3) {
-  return window['go']['main']['CalendarApp']['UpdateWorkspace'](arg1, arg2, arg3);
 }

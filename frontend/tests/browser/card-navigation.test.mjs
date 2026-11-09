@@ -21,7 +21,6 @@ function seedBoard() {
   window.phaseWrites = []
   window.go = { main: {
     CalendarApp: {
-      ListWorkspaces: async () => [{ id: 1, name: 'Daily Routine', hint: '' }],
       GetEvents: async () => rows,
       GetBoardEvents: async () => rows,
       SetBoardEventPhase: async (id, phase) => {
@@ -147,8 +146,7 @@ for (const engine of [webkit, chromium]) {
         window.boardWrites = []
         window.go = { main: {
           CalendarApp: {
-            ListWorkspaces: async () => [{ id: 1, name: 'Daily Routine', hint: '' }],
-      GetEvents: async () => [],
+            GetEvents: async () => [],
             GetBoardEvents: async day => [{ ...card, phase: day === today ? phase : card.phase }],
             SetBoardEventPhase: async (id, next, day) => {
               window.boardWrites.push([id, next, day])

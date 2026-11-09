@@ -18,9 +18,14 @@ const boardSchema = `
 		title TEXT NOT NULL, start TEXT NOT NULL, end TEXT, color TEXT NOT NULL,
 		all_day INTEGER NOT NULL, description TEXT NOT NULL, result TEXT NOT NULL,
 		bold INTEGER NOT NULL, phase TEXT NOT NULL, deadline TEXT NOT NULL,
-		workspace_id INTEGER NOT NULL DEFAULT 1,
 		created_at DATETIME, updated_at DATETIME,
 		PRIMARY KEY (event_id, day)
+	);
+	CREATE TABLE IF NOT EXISTS board_consolidations (
+		event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+		summary_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+		from_day TEXT NOT NULL,
+		CHECK (event_id <> summary_id)
 	);
 	CREATE TABLE IF NOT EXISTS board_meta (
 		id INTEGER PRIMARY KEY CHECK (id = 1), seeded_at DATETIME NOT NULL
@@ -28,7 +33,7 @@ const boardSchema = `
 `
 
 const eventFields = `title, start, end, color, all_day, description, result,
-	bold, phase, deadline, workspace_id, created_at, updated_at`
+	bold, phase, deadline, created_at, updated_at`
 
 // Scheduled dates use the same wall date as the month calendar. Audit
 // timestamps, in contrast, are instants and must be converted to local time.
@@ -63,16 +68,8 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	if _, err = tx.ExecContext(ctx, boardSchema); err != nil {
 		return err
 	}
-	if err := ensureWorkspacesTx(ctx, tx); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, chatSchema); err != nil {
 		return fmt.Errorf("create chat schema: %w", err)
-	}
-	// Upgrade older databases before the board marker can short-circuit the
-	// seed. Existing events and dated snapshots belong to Daily Routine.
-	if err := ensureWorkspaceColumns(ctx, tx); err != nil {
-		return err
 	}
 	result, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO board_meta (id, seeded_at) VALUES (1, ?)", now)
 	if err != nil {
@@ -128,102 +125,24 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	return tx.Commit()
 }
 
-func ensureWorkspaceColumns(ctx context.Context, tx *sql.Tx) error {
-	eventsExist, err := tableExists(ctx, tx, "events")
-	if err != nil {
-		return err
-	}
-	if eventsExist {
-		hasWorkspace, err := tableHasColumn(ctx, tx, "events", "workspace_id")
-		if err != nil {
-			return err
-		}
-		if !hasWorkspace {
-			if _, err := tx.ExecContext(ctx, "ALTER TABLE events ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1"); err != nil {
-				return fmt.Errorf("add events.workspace_id: %w", err)
-			}
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE events SET workspace_id = 1 WHERE workspace_id IS NULL OR workspace_id <= 0"); err != nil {
-			return fmt.Errorf("backfill events.workspace_id: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE events SET workspace_id = 1
-			WHERE workspace_id NOT IN (SELECT id FROM workspaces)
-		`); err != nil {
-			return fmt.Errorf("repair events.workspace_id: %w", err)
-		}
-	}
-
-	hasWorkspace, err := tableHasColumn(ctx, tx, "event_days", "workspace_id")
-	if err != nil {
-		return err
-	}
-	if !hasWorkspace {
-		if _, err := tx.ExecContext(ctx, "ALTER TABLE event_days ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1"); err != nil {
-			return fmt.Errorf("add event_days.workspace_id: %w", err)
-		}
-		if eventsExist {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE event_days SET workspace_id = COALESCE(
-					(SELECT workspace_id FROM events WHERE events.id = event_days.event_id), 1
-				)
-			`); err != nil {
-				return fmt.Errorf("backfill event_days.workspace_id: %w", err)
-			}
-		}
-	}
-	if eventsExist {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE event_days SET workspace_id = COALESCE(
-				(SELECT workspace_id FROM events WHERE events.id = event_days.event_id), 1
-			) WHERE workspace_id IS NULL OR workspace_id <= 0
-		`); err != nil {
-			return fmt.Errorf("repair event_days.workspace_id: %w", err)
-		}
-	} else if _, err := tx.ExecContext(ctx, "UPDATE event_days SET workspace_id = 1 WHERE workspace_id IS NULL OR workspace_id <= 0"); err != nil {
-		return fmt.Errorf("repair event_days.workspace_id: %w", err)
-	}
-	return nil
-}
-
-func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", name,
-	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("inspect table %s: %w", name, err)
-	}
-	return exists, nil
-}
-
-func tableHasColumn(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
-	var count int
-	query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", table)
-	if err := tx.QueryRowContext(ctx, query, column).Scan(&count); err != nil {
-		return false, fmt.Errorf("inspect %s.%s: %w", table, column, err)
-	}
-	return count > 0, nil
-}
-
 func writeDay(ctx context.Context, tx *sql.Tx, event Event, day string, carry bool) error {
 	var through any
 	if !carry || event.Phase == PhaseDone {
 		through = day
 	}
-	workspaceID := event.WorkspaceID
-	if workspaceID == 0 {
-		workspaceID = RoutineWorkspaceID
-	}
 	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO event_days (event_id, day, through_day, `+eventFields+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
 		event.Title, event.Start, event.End, event.Color, event.AllDay, event.Description, event.Result,
-		event.Bold, event.Phase, event.Deadline, workspaceID, event.CreatedAt, event.UpdatedAt)
+		event.Bold, event.Phase, event.Deadline, event.CreatedAt, event.UpdatedAt)
 	return err
 }
 
 // Use the last actual revision as of the requested day. Looking into the
 // future shows only explicit appointments. Neither path writes on read.
+// A folded card keeps its identity and all revisions before the effective
+// day. Deleting its summary must not bring completed implementation steps back.
 const boardSelect = `
+	SELECT * FROM (
 	SELECT d.event_id AS id, ` + eventFields + ` FROM event_days d
 	WHERE d.day = (SELECT MAX(h.day) FROM event_days h WHERE h.event_id = d.event_id AND h.day <= ?1)
 		AND (d.through_day IS NULL OR d.through_day >= ?1)
@@ -232,6 +151,9 @@ const boardSelect = `
 	SELECT id, ` + eventFields + ` FROM events e
 	WHERE e.start >= ?1 AND e.start < date(?1, '+1 day')
 		AND NOT EXISTS (SELECT 1 FROM event_days h WHERE h.event_id = e.id AND h.day <= ?1)
+	) AS visible
+	WHERE NOT EXISTS (SELECT 1 FROM board_consolidations m
+		WHERE m.event_id = visible.id AND m.from_day <= ?1)
 `
 
 func (s *Service) GetBoardEvents(ctx context.Context, day string) ([]Event, error) {
@@ -367,9 +289,6 @@ func changeEventTx(ctx context.Context, tx *sql.Tx, id int64, boardDay string, n
 	}
 	updated := before
 	apply(&updated)
-	if updated.WorkspaceID == 0 {
-		updated.WorkspaceID = RoutineWorkspaceID
-	}
 	updated.UpdatedAt = now
 
 	if day < today {
@@ -420,8 +339,8 @@ func changeEventTx(ctx context.Context, tx *sql.Tx, id int64, boardDay string, n
 		return Event{}, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE events SET title=?, start=?, end=?, color=?, all_day=?,
-		description=?, result=?, bold=?, phase=?, deadline=?, workspace_id=?, updated_at=? WHERE id=?`,
+		description=?, result=?, bold=?, phase=?, deadline=?, updated_at=? WHERE id=?`,
 		updated.Title, updated.Start, updated.End, updated.Color, updated.AllDay, updated.Description,
-		updated.Result, updated.Bold, updated.Phase, updated.Deadline, updated.WorkspaceID, now, id)
+		updated.Result, updated.Bold, updated.Phase, updated.Deadline, now, id)
 	return updated, err
 }

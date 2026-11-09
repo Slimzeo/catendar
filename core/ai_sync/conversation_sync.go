@@ -35,8 +35,7 @@ type ConversationStatus struct {
 }
 
 type conversationCalendar interface {
-	ListWorkspaces(context.Context) ([]calendar.Workspace, error)
-	GetBoardEvents(context.Context, string) ([]calendar.Event, error)
+	GetChatPlanningEvents(context.Context, string) ([]calendar.Event, error)
 	UnseenChatSources(context.Context, []string) (map[string]bool, error)
 	ApplyChatPlan(context.Context, string, []string, []calendar.ChatChange) (calendar.ChatCounts, error)
 	ListChatActivity(context.Context) ([]calendar.ChatActivity, error)
@@ -48,7 +47,7 @@ type ConversationSync struct {
 	calendar conversationCalendar
 	now      func() time.Time
 	read     func(context.Context, string, time.Time, time.Time) ([]conversations.Message, error)
-	plan     func(context.Context, string, string, []calendar.Workspace, []calendar.Event, []conversations.Message) ([]calendar.ChatChange, error)
+	plan     func(context.Context, string, string, []calendar.Event, []conversations.Message) ([]calendar.ChatChange, error)
 
 	mu     sync.Mutex
 	status ConversationStatus
@@ -254,19 +253,15 @@ func (s *ConversationSync) run(ctx context.Context, configuredPath string, now t
 		if s.now().Format("2006-01-02") != day {
 			return "", errors.New("the local day changed; sync again for today's board")
 		}
-		workspaces, err := s.calendar.ListWorkspaces(ctx)
-		if err != nil {
-			return "", err
-		}
-		cards, err := s.calendar.GetBoardEvents(ctx, day)
+		cards, err := s.calendar.GetChatPlanningEvents(ctx, day)
 		if err != nil {
 			return "", err
 		}
 		s.mu.Lock()
-		s.status.Message = fmt.Sprintf("Reading conversation evidence · %d messages left", remaining)
+		s.status.Message = fmt.Sprintf("Summarizing project progress · %d messages left", remaining)
 		s.mu.Unlock()
 		planCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		changes, err := s.plan(planCtx, cli.Path, day, workspaces, cards, batch)
+		changes, err := s.plan(planCtx, cli.Path, day, cards, batch)
 		cancel()
 		if err != nil {
 			return "", err

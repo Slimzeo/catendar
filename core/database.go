@@ -76,7 +76,6 @@ func createTables(db *sql.DB) error {
 			source_account_id TEXT NOT NULL DEFAULT '',
 			source_message_id TEXT NOT NULL DEFAULT '',
 			source_url TEXT NOT NULL DEFAULT '',
-			workspace_id INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -121,7 +120,6 @@ func migrateEvents(db *sql.DB) error {
 		{"source_account_id", "TEXT NOT NULL DEFAULT ''"},
 		{"source_message_id", "TEXT NOT NULL DEFAULT ''"},
 		{"source_url", "TEXT NOT NULL DEFAULT ''"},
-		{"workspace_id", "INTEGER NOT NULL DEFAULT 1"},
 	}
 
 	for _, column := range columns {
@@ -140,18 +138,12 @@ func migrateEvents(db *sql.DB) error {
 		}
 	}
 
-	if _, err := db.Exec("UPDATE events SET workspace_id = 1 WHERE workspace_id IS NULL OR workspace_id <= 0"); err != nil {
-		return fmt.Errorf("backfill events.workspace_id: %w", err)
-	}
 	if _, err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_events_email_source
 		ON events(source_account_id, source_message_id, title, start)
 		WHERE source_type = 'email'
 	`); err != nil {
 		return fmt.Errorf("create email event index: %w", err)
-	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_events_workspace ON events(workspace_id)"); err != nil {
-		return fmt.Errorf("create workspace event index: %w", err)
 	}
 	return nil
 }

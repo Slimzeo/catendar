@@ -18,7 +18,6 @@ function sourceSwitch(page, source, view = 'Board') {
 function seedSyncSources() {
   const now = new Date()
   const day = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
-  const workspaces = [{ id: 1, name: 'Daily Routine', hint: '' }]
   const rows = [{
     id: 1,
     title: 'Plan the week',
@@ -29,8 +28,7 @@ function seedSyncSources() {
     description: 'Source email: catendar://email/primary/message-1',
     result: '',
     color: '#7663b5',
-    bold: false,
-    workspaceId: 1
+    bold: false
   }]
   const idleConversations = {
     state: 'idle',
@@ -80,7 +78,6 @@ function seedSyncSources() {
   const record = (name, args = []) => window.syncCalls.push({ name, args })
 
   const calendarApp = {
-    ListWorkspaces: async () => workspaces.map(item => ({ ...item })),
     GetEvents: async () => rows.map(item => ({ ...item })),
     GetBoardEvents: async () => rows.map(item => ({ ...item }))
   }

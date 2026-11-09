@@ -63,7 +63,6 @@ const chatSchema = `
 		quote TEXT NOT NULL DEFAULT '',
 		task_key TEXT NOT NULL,
 		event_id INTEGER NOT NULL DEFAULT 0,
-		workspace_id INTEGER NOT NULL DEFAULT 0,
 		title TEXT NOT NULL,
 		phase TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
@@ -75,6 +74,11 @@ const chatSchema = `
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_activities_state ON chat_activities(state, id);
 	CREATE INDEX IF NOT EXISTS idx_chat_activities_source ON chat_activities(source_id);
+	CREATE TABLE IF NOT EXISTS chat_summary_keys (
+		event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+		task_key TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_chat_summary_keys_task_key ON chat_summary_keys(task_key);
 	CREATE TABLE IF NOT EXISTS chat_ownership (
 		event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
 		manual_description INTEGER NOT NULL DEFAULT 0,
@@ -89,7 +93,7 @@ const chatSchema = `
 
 const chatActivityFields = `id, day, state, reason, before_phase,
 	source_id, thread_id, thread_title, source_at, quote, task_key,
-	event_id, workspace_id, title, phase, description, result,
+	event_id, title, phase, description, result,
 	needs_review, base_updated`
 
 // chatOwnership remembers what the assistant last wrote to an event. A field
@@ -244,17 +248,6 @@ func (s *Service) applyChatChangeTx(
 	baselines map[int64]time.Time,
 	counts *ChatCounts,
 ) error {
-	if change.WorkspaceID != 0 {
-		exists, err := workspaceExists(ctx, tx, change.WorkspaceID)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			counts.Skipped++
-			return nil
-		}
-	}
-
 	target, ambiguous, reason, err := findChatTarget(ctx, tx, day, change)
 	if err != nil {
 		return err
@@ -342,6 +335,20 @@ func (s *Service) applyChatChangeTx(
 		counts.Pending++
 		return nil
 	}
+	if change.Title == before.Title && (change.Phase == "" || change.Phase == before.Phase) &&
+		(change.Description == "" || change.Description == before.Description) &&
+		(change.Result == "" || change.Result == before.Result) {
+		// A new session can repeat an already known outcome. Link its evidence
+		// without rewriting the card or invalidating a pending manual review.
+		if err := attachChatSummaryKey(ctx, tx, target.ID, change.TaskKey); err != nil {
+			return err
+		}
+		if err := upsertChatLink(ctx, tx, change.Source.ThreadID, change.TaskKey, target.ID, now); err != nil {
+			return err
+		}
+		counts.Skipped++
+		return nil
+	}
 	if _, err := updateChatTaskTx(ctx, tx, day, target.ID, &change, now); err != nil {
 		return err
 	}
@@ -415,9 +422,6 @@ func normalizeChatChange(change ChatChange) (ChatChange, error) {
 	if change.EventID < 0 {
 		return ChatChange{}, errors.New("chat event id must not be negative")
 	}
-	if change.WorkspaceID < 0 {
-		return ChatChange{}, errors.New("chat workspace id must not be negative")
-	}
 	base := strings.TrimSpace(change.BaseUpdated)
 	if base != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, base)
@@ -452,6 +456,11 @@ func findChatTarget(ctx context.Context, tx *sql.Tx, day string, change ChatChan
 		if err != nil {
 			return nil, false, "", err
 		}
+		if _, err := boardEvent(ctx, tx, event.ID, day, day); errors.Is(err, sql.ErrNoRows) {
+			return nil, false, "the referenced task is not on today's board", nil
+		} else if err != nil {
+			return nil, false, "", err
+		}
 		return &event, false, "", nil
 	}
 
@@ -467,19 +476,35 @@ func findChatTarget(ctx context.Context, tx *sql.Tx, day string, change ChatChan
 		if err != nil {
 			return nil, false, "", err
 		}
-		return &event, false, "", nil
+		_, err = boardEvent(ctx, tx, event.ID, day, day)
+		if err == nil {
+			return &event, false, "", nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, "", err
+		}
+		// The earlier milestone exists but has left the board. A current
+		// summary with the same key, possibly from another thread, takes over.
+
 	}
 
-	matches, err := eventsByNormalizedTitle(ctx, tx, day, change.WorkspaceID, change.Title)
+	byKey, err := eventsBySummaryKey(ctx, tx, day, change.TaskKey)
+	if err != nil {
+		return nil, false, "", err
+	}
+	if len(byKey) > 1 {
+		return nil, true, fmt.Sprintf("multiple tasks share the canonical key %q", change.TaskKey), nil
+	}
+	if len(byKey) == 1 {
+		return &byKey[0], false, "", nil
+	}
+
+	matches, err := eventsByNormalizedTitle(ctx, tx, day, change.Title)
 	if err != nil {
 		return nil, false, "", err
 	}
 	if len(matches) > 1 {
-		scope := "all workspaces"
-		if change.WorkspaceID != 0 {
-			scope = fmt.Sprintf("workspace %d", change.WorkspaceID)
-		}
-		return nil, true, fmt.Sprintf("multiple tasks in %s match %q", scope, change.Title), nil
+		return nil, true, fmt.Sprintf("multiple tasks match %q", change.Title), nil
 	}
 	if len(matches) == 1 {
 		return &matches[0], false, "", nil
@@ -487,18 +512,34 @@ func findChatTarget(ctx context.Context, tx *sql.Tx, day string, change ChatChan
 	return nil, false, "", nil
 }
 
-// eventsByNormalizedTitle only considers cards that are actually eligible on
-// today's board in the target workspace. Historical completed records and
-// future appointments must never be silently retargeted by a chat message.
-func eventsByNormalizedTitle(ctx context.Context, tx *sql.Tx, day string, workspaceID int64, title string) ([]Event, error) {
-	query := "SELECT * FROM (" + boardSelect + ")"
-	args := []any{day, day}
-	if workspaceID != 0 {
-		query += " WHERE workspace_id = ?3"
-		args = append(args, workspaceID)
+// eventsBySummaryKey resolves the stable task key across conversations. Only
+// cards visible on the requested day may be matched, so a completed historical
+// record or a future appointment is never silently retargeted.
+func eventsBySummaryKey(ctx context.Context, tx *sql.Tx, day, taskKey string) ([]Event, error) {
+	taskKey = strings.TrimSpace(taskKey)
+	if taskKey == "" {
+		return nil, nil
 	}
-	query += " ORDER BY id"
-	rows, err := tx.QueryContext(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx,
+		"SELECT * FROM ("+boardSelect+`) WHERE id IN (
+			SELECT event_id FROM chat_summary_keys WHERE task_key = ?3
+		) ORDER BY id`, day, day, taskKey)
+	if err != nil {
+		return nil, fmt.Errorf("read chat canonical key candidates: %w", err)
+	}
+	return collectEvents(rows)
+}
+
+// eventsByNormalizedTitle is the last-resort match for cards that do not have
+// a stable key yet. Cards with a different canonical key describe different
+// tasks even when their titles happen to be identical. Only cards that are
+// actually eligible on today's board are considered, so historical completed
+// records and future appointments are never silently retargeted.
+func eventsByNormalizedTitle(ctx context.Context, tx *sql.Tx, day, title string) ([]Event, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT * FROM (`+boardSelect+`) WHERE id NOT IN (
+			SELECT event_id FROM chat_summary_keys
+		) ORDER BY id`, day, day)
 	if err != nil {
 		return nil, fmt.Errorf("read chat title candidates: %w", err)
 	}
@@ -526,9 +567,6 @@ func chatConflictReason(current, before Event, change ChatChange, ownership chat
 		if err == nil && !base.Equal(current.UpdatedAt) && (baseline.IsZero() || !base.Equal(baseline)) {
 			return "the task changed after this conversation evidence was analyzed"
 		}
-	}
-	if change.WorkspaceID != 0 && (change.WorkspaceID != current.WorkspaceID || change.WorkspaceID != before.WorkspaceID) {
-		return "the requested workspace differs from the task's current workspace"
 	}
 
 	if change.Title != current.Title || change.Title != before.Title {
@@ -645,13 +683,6 @@ func chatSourceDay(at int64, location *time.Location) string {
 }
 
 func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatChange, now time.Time) (Event, error) {
-	workspaceID := change.WorkspaceID
-	if workspaceID == 0 {
-		workspaceID = RoutineWorkspaceID
-	}
-	if err := validateWorkspace(ctx, tx, workspaceID); err != nil {
-		return Event{}, err
-	}
 	if err := validateNewChatTask(*change, day, now.Location()); err != nil {
 		return Event{}, err
 	}
@@ -667,7 +698,6 @@ func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatC
 		AllDay:      true,
 		Description: change.Description,
 		Phase:       phase,
-		WorkspaceID: workspaceID,
 	}
 	if change.Result != "" {
 		result := change.Result
@@ -678,8 +708,10 @@ func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatC
 		return Event{}, err
 	}
 	change.EventID = event.ID
-	change.WorkspaceID = workspaceID
 	change.Phase = phase
+	if err := attachChatSummaryKey(ctx, tx, event.ID, change.TaskKey); err != nil {
+		return Event{}, err
+	}
 	if err := recordChatOwnership(ctx, tx, event.ID, *change); err != nil {
 		return Event{}, err
 	}
@@ -711,14 +743,14 @@ func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64
 		if change.Result != "" {
 			event.Result = change.Result
 		}
-		if change.WorkspaceID != 0 {
-			event.WorkspaceID = change.WorkspaceID
-		}
 	})
 	if err != nil {
 		return Event{}, err
 	}
 	change.EventID = eventID
+	if err := attachChatSummaryKey(ctx, tx, eventID, change.TaskKey); err != nil {
+		return Event{}, err
+	}
 	if err := recordChatOwnership(ctx, tx, eventID, written); err != nil {
 		return Event{}, err
 	}
@@ -726,6 +758,51 @@ func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64
 		return Event{}, err
 	}
 	return updated, nil
+}
+
+// attachChatSummaryKey records the first stable key for an event. INSERT OR
+// IGNORE keeps an existing canonical key even when a later conversation uses a
+// different local task key for the same card.
+func attachChatSummaryKey(ctx context.Context, tx *sql.Tx, eventID int64, taskKey string) error {
+	taskKey = strings.TrimSpace(taskKey)
+	if eventID <= 0 || taskKey == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR IGNORE INTO chat_summary_keys (event_id, task_key) VALUES (?, ?)",
+		eventID, taskKey,
+	); err != nil {
+		return fmt.Errorf("record chat summary key: %w", err)
+	}
+	return nil
+}
+
+// GetChatPlanningEvents returns the same cards as the daily board together with
+// their canonical task keys so the planner can reuse a stable identity across
+// conversations and threads.
+func (s *Service) GetChatPlanningEvents(ctx context.Context, day string) ([]Event, error) {
+	day, err := normalizeBoardDay(day)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT v.*, COALESCE(k.task_key, '') FROM (`+
+		boardSelect+`) v LEFT JOIN chat_summary_keys k ON k.event_id=v.id ORDER BY v.start, v.id`,
+		day, s.now().Format(dateLayout))
+	if err != nil {
+		return nil, fmt.Errorf("read current summary cards: %w", err)
+	}
+	defer rows.Close()
+	events := make([]Event, 0)
+	for rows.Next() {
+		var key string
+		event, err := scanEvent(rows, &key)
+		if err != nil {
+			return nil, err
+		}
+		event.SummaryKey = key
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func chatSeenSources(ctx context.Context, tx *sql.Tx, ids []string) (map[string]bool, error) {
@@ -895,11 +972,11 @@ func (s *Service) insertChatActivity(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO chat_activities (
 			day, state, reason, before_phase, source_id, thread_id, thread_title,
-			source_at, quote, task_key, event_id, workspace_id, title, phase,
+			source_at, quote, task_key, event_id, title, phase,
 			description, result, needs_review, base_updated, created_at, resolved_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, day, state, reason, beforePhase, change.Source.ID, change.Source.ThreadID, change.Source.ThreadTitle,
-		change.Source.At, change.Source.Quote, change.TaskKey, change.EventID, change.WorkspaceID,
+		change.Source.At, change.Source.Quote, change.TaskKey, change.EventID,
 		change.Title, change.Phase, change.Description, change.Result, needsReview, change.BaseUpdated,
 		now, resolved); err != nil {
 		return fmt.Errorf("record chat activity: %w", err)
@@ -967,7 +1044,7 @@ func scanChatActivity(row rowScanner) (ChatActivity, error) {
 		&activity.ID, &activity.Day, &activity.State, &activity.Reason, &activity.BeforePhase,
 		&activity.Change.Source.ID, &activity.Change.Source.ThreadID, &activity.Change.Source.ThreadTitle,
 		&activity.Change.Source.At, &activity.Change.Source.Quote, &activity.Change.TaskKey,
-		&activity.Change.EventID, &activity.Change.WorkspaceID, &activity.Change.Title,
+		&activity.Change.EventID, &activity.Change.Title,
 		&activity.Change.Phase, &activity.Change.Description, &activity.Change.Result,
 		&needsReview, &activity.Change.BaseUpdated,
 	); err != nil {
@@ -1030,15 +1107,6 @@ func (s *Service) acceptChatActivityTx(ctx context.Context, tx *sql.Tx, activity
 	if activity.Day != now.Format(dateLayout) {
 		return dismissChatActivity(ctx, tx, activity, "this suggestion is from an earlier day", now)
 	}
-	if change.WorkspaceID != 0 {
-		exists, err := workspaceExists(ctx, tx, change.WorkspaceID)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return dismissChatActivity(ctx, tx, activity, "the requested workspace no longer exists", now)
-		}
-	}
 
 	target, ambiguous, reason, err := findChatTarget(ctx, tx, activity.Day, change)
 	if err != nil {
@@ -1084,9 +1152,9 @@ func (s *Service) acceptChatActivityTx(ctx context.Context, tx *sql.Tx, activity
 
 func approveChatActivity(ctx context.Context, tx *sql.Tx, activity *ChatActivity, change ChatChange, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `
-		UPDATE chat_activities SET state = ?, reason = ?, event_id = ?, workspace_id = ?,
+		UPDATE chat_activities SET state = ?, reason = ?, event_id = ?,
 			base_updated = ?, resolved_at = ? WHERE id = ? AND state = ?
-	`, chatStateApplied, "approved by user", change.EventID, change.WorkspaceID,
+	`, chatStateApplied, "approved by user", change.EventID,
 		change.BaseUpdated, now, activity.ID, chatStatePending)
 	if err != nil {
 		return fmt.Errorf("approve chat activity: %w", err)

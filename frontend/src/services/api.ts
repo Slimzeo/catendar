@@ -10,8 +10,7 @@ import type {
   EmailAccountInput,
   EmailMessage,
   EventInput,
-  EventPhase,
-  Workspace
+  EventPhase
 } from '@/types'
 import { isEventPhase } from '@/constants/eventPhases'
 
@@ -23,10 +22,7 @@ import {
   UpdateEvent,
   DeleteEvent,
   SetEventPhase,
-  SetBoardEventPhase,
-  ListWorkspaces,
-  CreateWorkspace,
-  UpdateWorkspace
+  SetBoardEventPhase
 } from '../../wailsjs/go/main/CalendarApp'
 import {
   CancelAISync,
@@ -46,11 +42,9 @@ import {
 } from '../../wailsjs/go/main/AISyncApp'
 
 function normalizeEvent(raw: Awaited<ReturnType<typeof CreateEvent>>): CalendarEvent {
-  const workspaceId = raw.workspaceId
   return {
     ...raw,
     phase: isEventPhase(raw.phase) ? raw.phase : 'todo',
-    workspaceId: Number.isFinite(workspaceId) && workspaceId > 0 ? workspaceId : 1,
     deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined
   }
 }
@@ -91,18 +85,6 @@ export const eventApi = {
   deleteEvent: async (id: number): Promise<void> => {
     await DeleteEvent(id)
   }
-}
-
-const previewWorkspaces: Workspace[] = [
-  { id: 1, name: 'Daily Routine', hint: '' },
-  { id: 2, name: 'Seekino', hint: '' },
-  { id: 3, name: '个人 IP 打造', hint: '' }
-]
-// Only a running desktop backend can persist project or task changes.
-export const workspaceApi = {
-  list: async (): Promise<Workspace[]> => 'go' in window ? ListWorkspaces() : previewWorkspaces,
-  create: CreateWorkspace,
-  update: UpdateWorkspace
 }
 
 const emptyConversationStatus = (overrides: Partial<ConversationStatus> = {}): ConversationStatus => ({
