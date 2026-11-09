@@ -70,7 +70,8 @@ const plannerSchema = `{
           "result",
           "needsReview",
           "completionScope",
-          "completionQuote"
+          "completionQuote",
+          "registrations"
         ],
         "properties": {
           "sourceId": {"type": "string"},
@@ -83,7 +84,26 @@ const plannerSchema = `{
           "result": {"type": "string"},
           "needsReview": {"type": "boolean"},
           "completionScope": {"type": "string", "enum": ["none", "partial", "uncertain", "whole"]},
-          "completionQuote": {"type": "string"}
+          "completionQuote": {"type": "string"},
+          "registrations": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "url", "deadline", "deadlineText", "messageIds"],
+              "properties": {
+                "name": {"type": "string"},
+                "url": {"type": "string"},
+                "deadline": {"type": "string"},
+                "deadlineText": {"type": "string"},
+                "messageIds": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -91,17 +111,18 @@ const plannerSchema = `{
 }`
 
 type modelChange struct {
-	SourceID        *string `json:"sourceId"`
-	Quote           *string `json:"quote"`
-	TaskKey         *string `json:"taskKey"`
-	EventID         *int64  `json:"eventId"`
-	Title           *string `json:"title"`
-	Phase           *string `json:"phase"`
-	Description     *string `json:"description"`
-	Result          *string `json:"result"`
-	NeedsReview     *bool   `json:"needsReview"`
-	CompletionScope *string `json:"completionScope"`
-	CompletionQuote *string `json:"completionQuote"`
+	SourceID        *string              `json:"sourceId"`
+	Quote           *string              `json:"quote"`
+	TaskKey         *string              `json:"taskKey"`
+	EventID         *int64               `json:"eventId"`
+	Title           *string              `json:"title"`
+	Phase           *string              `json:"phase"`
+	Description     *string              `json:"description"`
+	Result          *string              `json:"result"`
+	NeedsReview     *bool                `json:"needsReview"`
+	CompletionScope *string              `json:"completionScope"`
+	CompletionQuote *string              `json:"completionQuote"`
+	Registrations   *[]modelRegistration `json:"registrations"`
 }
 
 type modelOutput struct {
@@ -527,14 +548,15 @@ func validateProposals(
 					At:          message.At,
 					Quote:       quote,
 				},
-				TaskKey:     taskKey,
-				EventID:     eventID,
-				Title:       title,
-				Phase:       phase,
-				Description: description,
-				Result:      result,
-				NeedsReview: *proposal.NeedsReview,
-				BaseUpdated: baseUpdated,
+				TaskKey:       taskKey,
+				EventID:       eventID,
+				Title:         title,
+				Phase:         phase,
+				Description:   description,
+				Result:        result,
+				NeedsReview:   *proposal.NeedsReview,
+				BaseUpdated:   baseUpdated,
+				Registrations: validateRegistrationProposals(proposal.Registrations, message, messages, references),
 			},
 			at:    message.At,
 			order: index,
@@ -607,6 +629,7 @@ func dedupeCandidates(candidates []changeCandidate, events map[int64]calendar.Ev
 	}
 	var order []identity
 	best := make(map[identity]changeCandidate)
+	registrations := make(map[identity][]calendar.Registration)
 	for _, c := range candidates {
 		change := &c.change
 		match := targets[change.TaskKey]
@@ -628,10 +651,15 @@ func dedupeCandidates(candidates []changeCandidate, events map[int64]calendar.Ev
 		if !exists || candidateIsNewer(c, prev) {
 			best[key] = c
 		}
+		// Every proposal for the same card was verified independently. Keep
+		// its registrations even when another proposal supplies the card text.
+		registrations[key] = appendRegistrations(registrations[key], change.Registrations...)
 	}
 	changes := make([]calendar.ChatChange, 0, len(order))
 	for _, key := range order {
-		changes = append(changes, best[key].change)
+		change := best[key].change
+		change.Registrations = registrations[key]
+		changes = append(changes, change)
 	}
 	return changes
 }

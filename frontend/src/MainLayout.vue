@@ -327,7 +327,7 @@ function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin:
     return true
   }
 
-  if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"]')) {
+  if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"], a[data-registration-link]')) {
     return false
   }
   if (event.repeat && !repeatable.has(action)) return true

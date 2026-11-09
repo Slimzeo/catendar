@@ -13,6 +13,7 @@ import type {
   EventPhase
 } from '@/types'
 import { isEventPhase } from '@/constants/eventPhases'
+import { normalizeRegistrations } from '@/utils/registrations'
 
 // Wails generates individual functions in frontend/wailsjs/go/main/CalendarApp
 import {
@@ -41,11 +42,14 @@ import {
   ResolveConversationChange
 } from '../../wailsjs/go/main/AISyncApp'
 
-function normalizeEvent(raw: Awaited<ReturnType<typeof CreateEvent>>): CalendarEvent {
+type RawEvent = Awaited<ReturnType<typeof CreateEvent>> & { registrations?: unknown }
+
+function normalizeEvent(raw: RawEvent): CalendarEvent {
   return {
     ...raw,
     phase: isEventPhase(raw.phase) ? raw.phase : 'todo',
-    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined
+    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined,
+    registrations: normalizeRegistrations(raw.registrations)
   }
 }
 
@@ -118,6 +122,16 @@ function normalizeConversationStatus(raw: Partial<ConversationStatus> | null | u
   })
 }
 
+function normalizeActivity(activity: ChatActivity): ChatActivity {
+  return {
+    ...activity,
+    change: { ...activity.change, registrations: normalizeRegistrations(activity.change.registrations) },
+    current: activity.current
+      ? { ...activity.current, registrations: normalizeRegistrations(activity.current.registrations) }
+      : undefined
+  }
+}
+
 export const conversationApi = {
   supported: () => 'go' in window,
   status: async (): Promise<ConversationStatus> => 'go' in window
@@ -126,8 +140,12 @@ export const conversationApi = {
   start: async () => normalizeConversationStatus(await StartConversationSync() as ConversationStatus),
   cancel: CancelConversationSync,
   saveSettings: async (codexPath: string) => normalizeConversationStatus(await SaveConversationSyncSettings(codexPath) as ConversationStatus),
-  activity: async (): Promise<ChatActivity[]> => 'go' in window ? await GetConversationActivity() as ChatActivity[] : [],
-  resolve: async (id: number, accept: boolean) => await ResolveConversationChange(id, accept) as ChatActivity
+  activity: async (): Promise<ChatActivity[]> => {
+    if (!('go' in window)) return []
+    const rows = await GetConversationActivity() as ChatActivity[]
+    return rows.map(normalizeActivity)
+  },
+  resolve: async (id: number, accept: boolean) => normalizeActivity(await ResolveConversationChange(id, accept) as ChatActivity)
 }
 
 const browserSetup: AISyncSetup = {

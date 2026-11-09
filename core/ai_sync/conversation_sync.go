@@ -67,6 +67,9 @@ func NewConversationSync(db *sql.DB, cal conversationCalendar) (*ConversationSyn
 	if err != nil {
 		return nil, err
 	}
+	if _, err := db.Exec(registrationUpgradeSQL); err != nil {
+		return nil, fmt.Errorf("prepare registration upgrade: %w", err)
+	}
 	s := &ConversationSync{db: db, calendar: cal, now: time.Now, read: conversations.ReadRecent,
 		plan: conversations.Plan}
 	var report, path string
@@ -241,54 +244,96 @@ func (s *ConversationSync) run(ctx context.Context, configuredPath string, now t
 	if err != nil {
 		return "", err
 	}
-	if len(unseen) == 0 {
+	day := now.Format("2006-01-02")
+	replay, err := s.registrationBatches(ctx, day, messages, unseen)
+	if err != nil {
+		return "", err
+	}
+	if len(unseen) == 0 && len(replay) == 0 {
 		return "No new conversation messages in the last 72 hours.", nil
 	}
-	day := now.Format("2006-01-02")
 	remaining := len(unseen)
 	for _, batch := range conversationBatches(messages, unseen) {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		if s.now().Format("2006-01-02") != day {
-			return "", errors.New("the local day changed; sync again for today's board")
-		}
-		cards, err := s.calendar.GetChatPlanningEvents(ctx, day)
-		if err != nil {
+		if err := s.applyConversationBatch(ctx, cli.Path, day, batch, nil, fmt.Sprintf("Summarizing project progress · %d messages left", remaining)); err != nil {
 			return "", err
 		}
-		s.mu.Lock()
-		s.status.Message = fmt.Sprintf("Summarizing project progress · %d messages left", remaining)
-		s.mu.Unlock()
-		planCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		changes, err := s.plan(planCtx, cli.Path, day, cards, batch)
-		cancel()
-		if err != nil {
-			return "", err
-		}
-		keys := make([]string, 0, len(batch))
 		for _, m := range batch {
 			if !m.ContextOnly {
-				keys = append(keys, m.ID)
+				remaining--
 			}
 		}
-		if s.now().Format("2006-01-02") != day {
-			return "", errors.New("the local day changed; sync again for today's board")
-		}
-		counts, err := s.calendar.ApplyChatPlan(ctx, day, keys, changes)
-		if err != nil {
+	}
+	for _, batch := range replay {
+		if err := s.applyConversationBatch(ctx, cli.Path, day, batch.messages, batch.targets, "Recovering registration links and deadlines"); err != nil {
 			return "", err
 		}
-		s.mu.Lock()
-		s.status.Sources += len(keys)
-		s.status.Created += counts.Created
-		s.status.Updated += counts.Updated
-		s.status.Skipped += counts.Skipped
-		s.status.Pending += counts.Pending
-		s.mu.Unlock()
-		remaining -= len(keys)
 	}
 	return "Codex conversations synced.", nil
+}
+
+func (s *ConversationSync) applyConversationBatch(ctx context.Context, binary, day string, batch []conversations.Message, targets map[int64]bool, label string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.now().Format("2006-01-02") != day {
+		return errors.New("the local day changed; sync again for today's board")
+	}
+	cards, err := s.calendar.GetChatPlanningEvents(ctx, day)
+	if err != nil {
+		return err
+	}
+	if targets != nil {
+		linked := make([]calendar.Event, 0, len(targets))
+		for _, e := range cards {
+			if targets[e.ID] && e.Phase != calendar.PhaseDone {
+				linked = append(linked, e)
+			}
+		}
+		if len(linked) == 0 {
+			return nil
+		}
+		cards = linked
+	}
+	s.mu.Lock()
+	s.status.Message = label
+	s.mu.Unlock()
+	planCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	changes, err := s.plan(planCtx, binary, day, cards, batch)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(batch))
+	for _, m := range batch {
+		if !m.ContextOnly {
+			key := m.ID
+			if targets != nil {
+				key = registrationCheckpoint(key)
+			}
+			keys = append(keys, key)
+		}
+	}
+	if targets != nil {
+		changes = registrationChanges(changes, cards)
+	}
+	if s.now().Format("2006-01-02") != day {
+		return errors.New("the local day changed; sync again for today's board")
+	}
+	counts, err := s.calendar.ApplyChatPlan(ctx, day, keys, changes)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.Sources += len(keys)
+	s.status.Created += counts.Created
+	s.status.Updated += counts.Updated
+	s.status.Skipped += counts.Skipped
+	s.status.Pending += counts.Pending
+	return nil
 }
 
 // A short reply can refer to an earlier message that was already synced. Supply
@@ -299,10 +344,19 @@ func conversationBatches(messages []conversations.Message, unseen map[string]boo
 	var batch []conversations.Message
 	size := 0
 	previous := make(map[string]conversations.Message)
+	resources := make(map[string][]conversations.Message)
 	inBatch := make(map[string]bool)
 	for _, m := range messages {
 		prior := previous[m.ThreadID]
 		previous[m.ThreadID] = m
+		earlierResources := resources[m.ThreadID]
+		if isRegistrationEvidence(m.Text) {
+			list := append(append([]conversations.Message(nil), earlierResources...), m)
+			if len(list) > 3 {
+				list = list[len(list)-3:]
+			}
+			resources[m.ThreadID] = list
+		}
 		if !unseen[m.ID] {
 			continue
 		}
@@ -310,6 +364,18 @@ func conversationBatches(messages []conversations.Message, unseen map[string]boo
 		if len(batch) > 0 && (len(batch) >= 24 || size+len(m.Text) > 48000) {
 			batches = append(batches, batch)
 			batch, size, inBatch = nil, 0, make(map[string]bool)
+		}
+		if isRegistrationFollowup(m.Text) {
+			// An earlier list can already be checkpointed when the user later picks a specific application. Supply only bounded, same-thread resource messages as context.
+			for _, evidence := range earlierResources {
+				if evidence.ID == prior.ID || inBatch[evidence.ID] || len(batch) >= 21 || size+len(evidence.Text)+len(prior.Text)+len(m.Text) > 48000 {
+					continue
+				}
+				evidence.ContextOnly = true
+				batch = append(batch, evidence)
+				size += len(evidence.Text)
+				inBatch[evidence.ID] = true
+			}
 		}
 		if prior.ID != "" && !inBatch[prior.ID] && size+len(prior.Text)+len(m.Text) <= 48000 {
 			prior.ContextOnly = true

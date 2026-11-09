@@ -48,7 +48,7 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		t.Fatalf("migrate database: %v", err)
 	}
 	for _, column := range []string{
-		"description", "result", "bold", "phase", "deadline", "source_type",
+		"description", "result", "bold", "phase", "deadline", "registrations", "source_type",
 		"source_account_id", "source_message_id", "source_url",
 	} {
 		var count int
@@ -102,7 +102,7 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 		t.Fatalf("reopen migrated database: %v", err)
 	}
 	defer reopened.Close()
-	for _, column := range []string{"phase", "deadline", "result"} {
+	for _, column := range []string{"phase", "deadline", "registrations", "result"} {
 		var count int
 		if err := reopened.QueryRow("SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = ?", column).Scan(&count); err != nil {
 			t.Fatalf("re-inspect column %s: %v", column, err)
@@ -116,6 +116,10 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 	}
 	if phase != "todo" || deadline != "" || result != migratedResult {
 		t.Fatalf("legacy row changed after reopen: phase=%q deadline=%q result=%q", phase, deadline, result)
+	}
+	var registrations string
+	if err := reopened.QueryRow("SELECT registrations FROM events WHERE id = 1").Scan(&registrations); err != nil || registrations != "[]" {
+		t.Fatalf("legacy registrations default = %q err=%v", registrations, err)
 	}
 	var eventCount int
 	if err := reopened.QueryRow("SELECT COUNT(*) FROM events").Scan(&eventCount); err != nil {
@@ -495,6 +499,16 @@ func TestOpenDatabaseKeepsLegacyWorkspaceCardsAndReviewsWorking(t *testing.T) {
 	var eventWorkspace int64
 	if err := db.QueryRow("SELECT workspace_id FROM events WHERE id = ?", seekino).Scan(&eventWorkspace); err != nil || eventWorkspace != 2 {
 		t.Fatalf("legacy event workspace = %d err=%v", eventWorkspace, err)
+	}
+	for _, table := range []string{"events", "event_days", "chat_activities"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('"+table+"') WHERE name = 'registrations'").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("legacy %s.registrations = %d err=%v", table, count, err)
+		}
+	}
+	var dayRegistrations string
+	if err := db.QueryRow("SELECT registrations FROM event_days WHERE event_id = ? AND day = ?", seekino, today).Scan(&dayRegistrations); err != nil || dayRegistrations != "[]" {
+		t.Fatalf("legacy board registrations default = %q err=%v", dayRegistrations, err)
 	}
 	var summaryObjects int
 	if err := db.QueryRow(`

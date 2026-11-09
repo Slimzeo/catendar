@@ -51,7 +51,7 @@ func newTestConversationSync(t *testing.T) (*ConversationSync, *testConversation
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec("CREATE TABLE ai_settings (id INTEGER PRIMARY KEY, codex_path TEXT)"); err != nil {
+	if _, err := db.Exec("CREATE TABLE ai_settings (id INTEGER PRIMARY KEY, codex_path TEXT); CREATE TABLE chat_sources (source_id TEXT PRIMARY KEY); CREATE TABLE chat_links (thread_id TEXT, event_id INTEGER)"); err != nil {
 		t.Fatal(err)
 	}
 	board := &testConversationBoard{seen: make(map[string]bool)}

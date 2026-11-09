@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { NButton, NInput, useMessage } from 'naive-ui'
 import type { ChatActivity } from '@/types'
 import { useConversationSyncStore } from '@/stores/conversationSync'
+import EventRegistrations from '@/components/event/EventRegistrations.vue'
 
 const props = withDefaults(defineProps<{
   active?: boolean
@@ -226,8 +227,26 @@ async function resolve(activity: ChatActivity, accept: boolean) {
           <p v-if="activity.change.title !== activity.current.title">{{ activity.current.title }}</p>
           <p v-if="activity.change.description && activity.change.description !== activity.current.description">Description · {{ activity.current.description || 'Empty' }}</p>
           <p v-if="activity.change.result && activity.change.result !== activity.current.result">Result · {{ activity.current.result || 'Empty' }}</p>
+          <div v-if="activity.current.registrations?.length" class="current-registrations">
+            <span class="current-label">Registrations</span>
+            <event-registrations
+              class="panel-registrations"
+              :registrations="activity.current.registrations"
+              :context="activity.current.title"
+            />
+          </div>
         </div>
-        <dl v-if="activity.change.description || activity.change.result" class="change-details">
+        <dl v-if="activity.change.description || activity.change.result || activity.change.registrations?.length" class="change-details">
+          <div v-if="activity.change.registrations?.length" class="change-detail">
+            <dt>Proposed registrations</dt>
+            <dd class="change-registrations">
+              <event-registrations
+                class="panel-registrations"
+                :registrations="activity.change.registrations"
+                :context="activity.change.title"
+              />
+            </dd>
+          </div>
           <div v-if="activity.change.description" class="change-detail">
             <dt>Proposed description</dt>
             <dd class="change-description">{{ activity.change.description }}</dd>
@@ -593,6 +612,31 @@ async function resolve(activity: ChatActivity, accept: boolean) {
   font-size: 11px;
 }
 .current-card p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.current-registrations {
+  display: grid;
+  gap: 2px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.current-label {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.panel-registrations {
+  --registration-font-size: 10.5px;
+}
+
+.change-registrations {
+  margin: 0;
+  padding: 0;
+}
 
 .source-line {
   margin: 4px 0 0;

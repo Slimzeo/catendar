@@ -67,6 +67,7 @@ const chatSchema = `
 		phase TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
 		result TEXT NOT NULL DEFAULT '',
+		registrations TEXT NOT NULL DEFAULT '[]',
 		needs_review INTEGER NOT NULL DEFAULT 0,
 		base_updated TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
@@ -79,6 +80,10 @@ const chatSchema = `
 		task_key TEXT NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_chat_summary_keys_task_key ON chat_summary_keys(task_key);
+	CREATE TABLE IF NOT EXISTS chat_registration_deadlines (
+		event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+		derived TEXT
+	);
 	CREATE TABLE IF NOT EXISTS chat_ownership (
 		event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
 		manual_description INTEGER NOT NULL DEFAULT 0,
@@ -93,7 +98,7 @@ const chatSchema = `
 
 const chatActivityFields = `id, day, state, reason, before_phase,
 	source_id, thread_id, thread_title, source_at, quote, task_key,
-	event_id, title, phase, description, result,
+	event_id, title, phase, description, result, registrations,
 	needs_review, base_updated`
 
 // chatOwnership remembers what the assistant last wrote to an event. A field
@@ -337,7 +342,8 @@ func (s *Service) applyChatChangeTx(
 	}
 	if change.Title == before.Title && (change.Phase == "" || change.Phase == before.Phase) &&
 		(change.Description == "" || change.Description == before.Description) &&
-		(change.Result == "" || change.Result == before.Result) {
+		(change.Result == "" || change.Result == before.Result) &&
+		!registrationsWouldChange(before.Registrations, change.Registrations) {
 		// A new session can repeat an already known outcome. Link its evidence
 		// without rewriting the card or invalidating a pending manual review.
 		if err := attachChatSummaryKey(ctx, tx, target.ID, change.TaskKey); err != nil {
@@ -349,7 +355,7 @@ func (s *Service) applyChatChangeTx(
 		counts.Skipped++
 		return nil
 	}
-	if _, err := updateChatTaskTx(ctx, tx, day, target.ID, &change, now); err != nil {
+	if _, err := updateChatTaskTx(ctx, tx, day, target.ID, &change, now, false); err != nil {
 		return err
 	}
 	if err := s.insertChatActivity(ctx, tx, day, chatStateApplied, "", before.Phase, change, now); err != nil {
@@ -419,6 +425,11 @@ func normalizeChatChange(change ChatChange) (ChatChange, error) {
 	if len([]rune(change.Result)) > maxChatResult {
 		return ChatChange{}, fmt.Errorf("chat result exceeds %d characters", maxChatResult)
 	}
+	registrations, err := normalizeRegistrations(change.Registrations)
+	if err != nil {
+		return ChatChange{}, err
+	}
+	change.Registrations = registrations
 	if change.EventID < 0 {
 		return ChatChange{}, errors.New("chat event id must not be negative")
 	}
@@ -610,6 +621,11 @@ func chatConflictReason(current, before Event, change ChatChange, ownership chat
 			return reason
 		}
 	}
+	for _, existing := range [][]Registration{before.Registrations, current.Registrations} {
+		if reason := registrationConflictReason(existing, change.Registrations); reason != "" {
+			return reason
+		}
+	}
 
 	if change.Phase == PhaseDone && result == "" {
 		return errChatDoneWithoutResult.Error()
@@ -707,6 +723,18 @@ func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatC
 	if err != nil {
 		return Event{}, err
 	}
+	if len(change.Registrations) > 0 {
+		event.Registrations, _ = mergeRegistrations(nil, change.Registrations, false)
+		event.Deadline = deriveRegistrationDeadline(event.Registrations, now.Format(dateLayout))
+		if event.Deadline != "" {
+			if err := recordRegistrationDeadline(ctx, tx, event.ID, event.Deadline); err != nil {
+				return Event{}, err
+			}
+		}
+		if err := writeRegistrationDetailsTx(ctx, tx, &event, now); err != nil {
+			return Event{}, err
+		}
+	}
 	change.EventID = event.ID
 	change.Phase = phase
 	if err := attachChatSummaryKey(ctx, tx, event.ID, change.TaskKey); err != nil {
@@ -721,8 +749,18 @@ func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatC
 	return event, nil
 }
 
-func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64, change *ChatChange, now time.Time) (Event, error) {
+func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64, change *ChatChange, now time.Time, overwriteRegistrations bool) (Event, error) {
 	written := *change
+	var owned sql.NullString
+	var tracked bool
+	if len(change.Registrations) > 0 {
+		err := tx.QueryRowContext(ctx, "SELECT derived FROM chat_registration_deadlines WHERE event_id=?", eventID).Scan(&owned)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Event{}, err
+		}
+		tracked = err == nil
+	}
+	derived := false
 	updated, err := changeEventTx(ctx, tx, eventID, day, now, func(event *Event) {
 		if event.Description == change.Description {
 			written.Description = ""
@@ -743,9 +781,20 @@ func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64
 		if change.Result != "" {
 			event.Result = change.Result
 		}
+		merged, registrationsChanged := mergeRegistrations(event.Registrations, change.Registrations, overwriteRegistrations)
+		event.Registrations = merged
+		if registrationsChanged && ((!tracked && event.Deadline == "") || (owned.Valid && event.Deadline == owned.String)) {
+			event.Deadline = deriveRegistrationDeadline(merged, now.Format(dateLayout))
+			derived = event.Deadline != ""
+		}
 	})
 	if err != nil {
 		return Event{}, err
+	}
+	if derived {
+		if err := recordRegistrationDeadline(ctx, tx, eventID, updated.Deadline); err != nil {
+			return Event{}, err
+		}
 	}
 	change.EventID = eventID
 	if err := attachChatSummaryKey(ctx, tx, eventID, change.TaskKey); err != nil {
@@ -856,6 +905,11 @@ func recordChatSource(
 // Record direct edits separately so an older conversation cannot undo an
 // intentional phase change or refill a field the user explicitly cleared.
 func recordManualChatEdit(ctx context.Context, tx *sql.Tx, before, after Event, now time.Time) error {
+	if before.Deadline != after.Deadline {
+		if err := recordRegistrationDeadline(ctx, tx, after.ID, nil); err != nil {
+			return err
+		}
+	}
 	description := before.Description != after.Description
 	result := before.Result != after.Result
 	var phaseAt int64
@@ -969,15 +1023,19 @@ func (s *Service) insertChatActivity(
 	if change.NeedsReview {
 		needsReview = 1
 	}
+	registrations, err := encodeRegistrations(change.Registrations)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO chat_activities (
 			day, state, reason, before_phase, source_id, thread_id, thread_title,
 			source_at, quote, task_key, event_id, title, phase,
-			description, result, needs_review, base_updated, created_at, resolved_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			description, result, registrations, needs_review, base_updated, created_at, resolved_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, day, state, reason, beforePhase, change.Source.ID, change.Source.ThreadID, change.Source.ThreadTitle,
 		change.Source.At, change.Source.Quote, change.TaskKey, change.EventID,
-		change.Title, change.Phase, change.Description, change.Result, needsReview, change.BaseUpdated,
+		change.Title, change.Phase, change.Description, change.Result, registrations, needsReview, change.BaseUpdated,
 		now, resolved); err != nil {
 		return fmt.Errorf("record chat activity: %w", err)
 	}
@@ -1040,16 +1098,22 @@ func (s *Service) chatActivities(ctx context.Context, query string, args ...any)
 func scanChatActivity(row rowScanner) (ChatActivity, error) {
 	var activity ChatActivity
 	var needsReview int
+	var registrations string
 	if err := row.Scan(
 		&activity.ID, &activity.Day, &activity.State, &activity.Reason, &activity.BeforePhase,
 		&activity.Change.Source.ID, &activity.Change.Source.ThreadID, &activity.Change.Source.ThreadTitle,
 		&activity.Change.Source.At, &activity.Change.Source.Quote, &activity.Change.TaskKey,
 		&activity.Change.EventID, &activity.Change.Title,
 		&activity.Change.Phase, &activity.Change.Description, &activity.Change.Result,
-		&needsReview, &activity.Change.BaseUpdated,
+		&registrations, &needsReview, &activity.Change.BaseUpdated,
 	); err != nil {
 		return ChatActivity{}, fmt.Errorf("scan chat activity: %w", err)
 	}
+	decoded, err := decodeRegistrations(registrations)
+	if err != nil {
+		return ChatActivity{}, err
+	}
+	activity.Change.Registrations = decoded
 	activity.Change.NeedsReview = needsReview == 1
 	return activity, nil
 }
@@ -1144,7 +1208,7 @@ func (s *Service) acceptChatActivityTx(ctx context.Context, tx *sql.Tx, activity
 	if change.Phase == PhaseDone && strings.TrimSpace(change.Result) == "" {
 		return dismissChatActivity(ctx, tx, activity, errChatDoneWithoutResult.Error(), now)
 	}
-	if _, err := updateChatTaskTx(ctx, tx, activity.Day, target.ID, &change, now); err != nil {
+	if _, err := updateChatTaskTx(ctx, tx, activity.Day, target.ID, &change, now, true); err != nil {
 		return err
 	}
 	return approveChatActivity(ctx, tx, activity, change, now)

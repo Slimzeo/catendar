@@ -195,6 +195,7 @@ export namespace calendar {
 	    phase: string;
 	    description: string;
 	    result: string;
+	    registrations?: Registration[];
 	    needsReview: boolean;
 	    baseUpdated: string;
 
@@ -211,6 +212,7 @@ export namespace calendar {
 	        this.phase = source["phase"];
 	        this.description = source["description"];
 	        this.result = source["result"];
+	        this.registrations = this.convertValues(source["registrations"], Registration);
 	        this.needsReview = source["needsReview"];
 	        this.baseUpdated = source["baseUpdated"];
 	    }
@@ -233,6 +235,24 @@ export namespace calendar {
 		    return a;
 		}
 	}
+	export class Registration {
+	    name: string;
+	    url?: string;
+	    deadline?: string;
+	    deadlineText?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Registration(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.url = source["url"];
+	        this.deadline = source["deadline"];
+	        this.deadlineText = source["deadlineText"];
+	    }
+	}
 	export class Event {
 	    id: number;
 	    title: string;
@@ -245,6 +265,7 @@ export namespace calendar {
 	    bold: boolean;
 	    phase: string;
 	    deadline?: string;
+	    registrations?: Registration[];
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -267,6 +288,7 @@ export namespace calendar {
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
+	        this.registrations = this.convertValues(source["registrations"], Registration);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }

@@ -11,15 +11,16 @@ type ChatEvidence struct {
 }
 
 type ChatChange struct {
-	Source      ChatEvidence `json:"source"`
-	TaskKey     string       `json:"taskKey"`
-	EventID     int64        `json:"eventId"`
-	Title       string       `json:"title"`
-	Phase       string       `json:"phase"`
-	Description string       `json:"description"`
-	Result      string       `json:"result"`
-	NeedsReview bool         `json:"needsReview"`
-	BaseUpdated string       `json:"baseUpdated"`
+	Source        ChatEvidence   `json:"source"`
+	TaskKey       string         `json:"taskKey"`
+	EventID       int64          `json:"eventId"`
+	Title         string         `json:"title"`
+	Phase         string         `json:"phase"`
+	Description   string         `json:"description"`
+	Result        string         `json:"result"`
+	Registrations []Registration `json:"registrations,omitempty"`
+	NeedsReview   bool           `json:"needsReview"`
+	BaseUpdated   string         `json:"baseUpdated"`
 }
 
 type ChatActivity struct {
