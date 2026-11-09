@@ -10,9 +10,10 @@ import DayEventsDrawer from './components/event/DayEventsDrawer.vue'
 import DeleteEventDialog from './components/event/DeleteEventDialog.vue'
 import { isPlainEscape, type ShortcutAction } from './shortcuts'
 import { useShortcutKeys } from './composables/useShortcutKeys'
-import { useCalendarStore } from './stores/calendar'
+import { useCalendarStore, type CalendarView } from './stores/calendar'
 import { useConversationSyncStore } from './stores/conversationSync'
 import { useEventsStore } from './stores/events'
+import { useSyncSourcesStore } from './stores/syncSources'
 import { useWorkspacesStore } from './stores/workspaces'
 import { aiSyncApi } from './services/api'
 import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput, EventPhase } from './types'
@@ -25,6 +26,7 @@ const SettingsModal = defineAsyncComponent(loadSettingsModal)
 const EmailSourceModal = defineAsyncComponent(loadEmailSourceModal)
 
 const calendarStore = useCalendarStore()
+const sources = useSyncSourcesStore()
 const eventsStore = useEventsStore()
 const workspacesStore = useWorkspacesStore()
 const conversationStore = useConversationSyncStore()
@@ -61,6 +63,10 @@ const aiSyncStatus = ref<AISyncStatus>({
 })
 let aiSyncPoller: ReturnType<typeof setInterval> | null = null
 let modalPreloadTimer: ReturnType<typeof setTimeout> | null = null
+const emailStarting = ref(false)
+const emailRunOrigin = ref<CalendarView | null>(null)
+let emailStatusRequest = 0
+let emailPreviewRequest = 0
 const isAISyncing = computed(() => aiSyncStatus.value.state === 'running')
 const showEmailSource = ref(false)
 const emailSourceLoading = ref(false)
@@ -97,14 +103,15 @@ function openBoardFromDrawer(date: string) {
 function openSettings(tab: 'shortcuts' | 'ai-sync') {
   settingsTab.value = tab
   showSettings.value = true
-  if (tab === 'ai-sync') void conversationStore.refresh({ activities: true })
+  if (tab === 'ai-sync' && sources.active.codex) void conversationStore.refresh({ activities: true })
 }
 
 async function openAISync() {
+  if (!sources.active.codex && !sources.active.email) return
   openSettings('ai-sync')
   // The toolbar is the explicit manual trigger. A click during a run only
   // reveals the current status; it never queues a second run.
-  if (conversationStore.running || conversationStore.starting) return
+  if (!sources.active.codex || conversationStore.running || conversationStore.starting) return
   await conversationStore.start()
 }
 
@@ -191,7 +198,10 @@ async function confirmDelete() {
 }
 
 async function startAISync() {
-  if (isAISyncing.value) return
+  if (!sources.active.email || emailStarting.value || isAISyncing.value) return
+  emailStarting.value = true
+  emailRunOrigin.value = calendarStore.viewMode
+  emailStatusRequest++
   showAISyncStatus.value = true
   try {
     aiSyncStatus.value = await aiSyncApi.start()
@@ -200,9 +210,11 @@ async function startAISync() {
     const detail = errorMessage(error, 'Could not start email sync')
     message.error(detail)
     showAISyncStatus.value = false
-    if (/not configured|not available|not installed/i.test(detail)) {
+    if (sources.active.email && /not configured|not available|not installed/i.test(detail)) {
       openSettings('ai-sync')
     }
+  } finally {
+    emailStarting.value = false
   }
 }
 
@@ -215,16 +227,20 @@ async function cancelAISync() {
 }
 
 async function openSourceEmail(sourceURL: string) {
+  if (!sources.active.email) return
+  const request = ++emailPreviewRequest
   showEmailSource.value = true
   emailSourceLoading.value = true
   sourceEmail.value = null
   try {
-    sourceEmail.value = await aiSyncApi.getSourceEmail(sourceURL)
+    const email = await aiSyncApi.getSourceEmail(sourceURL)
+    if (request === emailPreviewRequest) sourceEmail.value = email
   } catch (error) {
+    if (request !== emailPreviewRequest) return
     showEmailSource.value = false
     message.error(errorMessage(error, 'Could not read source email'))
   } finally {
-    emailSourceLoading.value = false
+    if (request === emailPreviewRequest) emailSourceLoading.value = false
   }
 }
 
@@ -239,27 +255,31 @@ function stopAISyncPolling() {
 }
 
 async function pollAISyncStatus() {
+  if (emailStarting.value) return
+  const request = ++emailStatusRequest
   try {
     const previousState = aiSyncStatus.value.state
     const status = await aiSyncApi.status()
+    if (request !== emailStatusRequest) return
     aiSyncStatus.value = status
     if (status.state === 'running') {
       showAISyncStatus.value = true
+      if (!aiSyncPoller) startAISyncPolling()
       return
     }
     stopAISyncPolling()
     if (previousState !== 'running') return
     if (status.state === 'succeeded') {
       await eventsStore.fetchEvents()
-      message.success(`Email sync complete · ${aiSyncCounts.value}`)
+      if (sources.active.email) message.success(`Email sync complete · ${aiSyncCounts.value}`)
     } else if (status.state === 'cancelled') {
-      message.info('Email sync cancelled')
+      if (sources.active.email) message.info('Email sync cancelled')
     } else if (status.state === 'failed') {
-      message.error(status.message || 'Email sync failed')
+      if (sources.active.email) message.error(status.message || 'Email sync failed')
     }
   } catch (error) {
     stopAISyncPolling()
-    message.error(errorMessage(error, 'Could not read email sync status'))
+    if (sources.active.email) message.error(errorMessage(error, 'Could not read email sync status'))
   }
 }
 
@@ -357,12 +377,28 @@ watch(editingOrDeleting, async open => {
 
 watch([() => eventsStore.scope, () => calendarStore.today.getTime()], () => void eventsStore.fetchEvents())
 
+// Page changes may refresh local status. A sync only starts from an explicit action.
+watch(() => sources.active.codex, enabled => {
+  if (enabled) void conversationStore.refresh({ silent: true })
+}, { immediate: true })
+
+watch(() => sources.active.email, enabled => {
+  if (enabled) void pollAISyncStatus()
+  else {
+    emailPreviewRequest++
+    emailSourceLoading.value = false
+    showEmailSource.value = false
+    sourceEmail.value = null
+  }
+}, { immediate: true })
+
+watch([isAISyncing, () => sources.allowsRun('email', emailRunOrigin.value)], ([active, allowed]) => {
+  if (active && !allowed) void cancelAISync()
+})
+
 onMounted(() => {
   void workspacesStore.fetchWorkspaces()
   eventsStore.fetchEvents()
-  // Read the local status once so pending reviews are visible, but never scan
-  // conversations until the user explicitly clicks AI Sync.
-  void conversationStore.refresh({ silent: true })
   requestAnimationFrame(() => {
     void loadEventModal()
   })
@@ -370,13 +406,6 @@ onMounted(() => {
     void loadSettingsModal()
     void loadEmailSourceModal()
   }, 300)
-  void aiSyncApi.status().then(status => {
-    aiSyncStatus.value = status
-    if (status.state === 'running') {
-      showAISyncStatus.value = true
-      startAISyncPolling()
-    }
-  })
 })
 
 onUnmounted(() => {
@@ -403,7 +432,7 @@ onUnmounted(() => {
 
     <transition name="sync-status">
       <div
-        v-if="showAISyncStatus && aiSyncStatus.state !== 'idle' && !showSettings"
+        v-if="sources.active.email && showAISyncStatus && aiSyncStatus.state !== 'idle' && !showSettings"
         class="ai-sync-status"
         :class="aiSyncStatus.state"
         role="status"

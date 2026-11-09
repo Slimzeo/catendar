@@ -13,10 +13,12 @@ import {
 } from 'naive-ui'
 import { aiSyncApi } from '@/services/api'
 import ConversationSyncPanel from '@/components/ai-sync/ConversationSyncPanel.vue'
+import SyncSourcesPanel from './SyncSourcesPanel.vue'
+import { useSyncSourcesStore } from '@/stores/syncSources'
 import KeyboardShortcutsPanel from '@/components/settings/KeyboardShortcutsPanel.vue'
 import type { AIProvider, AISyncSetup, AISyncStatus, EmailAccountInput } from '@/types'
 
-type SettingsTab = 'shortcuts' | 'ai-sync'
+type SettingsTab = 'shortcuts' | 'ai-sync' | 'components'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -37,6 +39,7 @@ const emit = defineEmits<{
 }>()
 
 const message = useMessage()
+const preferences = useSyncSourcesStore()
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -47,9 +50,10 @@ const shortcutRecording = ref(false)
 const tabButtons = ref<HTMLButtonElement[]>([])
 const tabs: { id: SettingsTab; label: string }[] = [
   { id: 'shortcuts', label: 'Keyboard shortcuts' },
-  { id: 'ai-sync', label: 'AI Sync' }
+  { id: 'ai-sync', label: 'AI Sync' },
+  { id: 'components', label: 'Components' }
 ]
-let aiLoadedForOpen = false
+let setupRequest = 0
 
 const email = reactive<EmailAccountInput>({
   address: '',
@@ -99,22 +103,25 @@ const emailSummary = computed(() => {
   return status.message || `Email sync ${status.state}`
 })
 
-watch(() => props.show, show => {
-  if (!show) return
-  activeTab.value = props.initialTab
-  aiLoadedForOpen = false
-  if (activeTab.value === 'ai-sync') openAIConfig()
+watch([() => props.show, () => props.initialTab], ([show, tab]) => {
+  if (show) activeTab.value = tab
 }, { immediate: true })
 
-watch(() => props.initialTab, tab => {
-  if (!props.show) return
-  activeTab.value = tab
-  if (tab === 'ai-sync') ensureAIConfig()
-})
+watch([() => props.show, () => preferences.active.email, activeTab], ([show, enabled, tab]) => {
+  if (!show || !enabled) {
+    setupRequest++
+    loading.value = false
+    setup.value = null
+    loadError.value = ''
+    email.secret = ''
+  } else if (tab === 'ai-sync' && !setup.value && !loading.value) {
+    void loadSetup()
+  }
+}, { immediate: true })
 
-function activateTab(tab: SettingsTab) {
+function activateTab(tab: SettingsTab, focus = false) {
   activeTab.value = tab
-  if (tab === 'ai-sync') ensureAIConfig()
+  if (focus) nextTick(() => tabButtons.value[tabs.findIndex(item => item.id === tab)]?.focus())
 }
 
 function handleTabKeydown(event: KeyboardEvent, index: number) {
@@ -127,25 +134,17 @@ function handleTabKeydown(event: KeyboardEvent, index: number) {
 
   event.preventDefault()
   const nextTab = tabs[nextIndex]
-  activateTab(nextTab.id)
-  nextTick(() => tabButtons.value[nextIndex]?.focus())
-}
-
-function openAIConfig() {
-  aiLoadedForOpen = true
-  void loadSetup()
-}
-
-function ensureAIConfig() {
-  if (!aiLoadedForOpen || loadError.value) openAIConfig()
+  activateTab(nextTab.id, true)
 }
 
 async function loadSetup() {
-  if (loading.value) return
+  if (!preferences.active.email || loading.value) return
+  const request = ++setupRequest
   loading.value = true
   loadError.value = ''
   try {
     const result = await aiSyncApi.getSetup()
+    if (request !== setupRequest) return
     setup.value = result
     Object.assign(email, {
       address: result.email.address,
@@ -158,9 +157,9 @@ async function loadSetup() {
     })
     Object.assign(agent, result.agent.settings)
   } catch (error) {
-    loadError.value = errorMessage(error, 'Could not load AI Sync settings')
+    if (request === setupRequest) loadError.value = errorMessage(error, 'Could not load email settings')
   } finally {
-    loading.value = false
+    if (request === setupRequest) loading.value = false
   }
 }
 
@@ -180,7 +179,7 @@ function applyEmailPreset() {
 }
 
 async function testConnection() {
-  if (props.syncing) return
+  if (!preferences.active.email || props.syncing) return
   testing.value = true
   try {
     applyEmailPreset()
@@ -194,7 +193,7 @@ async function testConnection() {
 }
 
 async function save() {
-  if (props.syncing) return
+  if (!preferences.active.email || props.syncing) return
   saving.value = true
   try {
     applyEmailPreset()
@@ -286,137 +285,162 @@ defineExpose({ dismiss })
         aria-labelledby="settings-tab-ai-sync"
         tabindex="0"
       >
-        <p class="ai-tab-intro">
-          Codex conversations and email sync are independent sources. Configure either one below.
-        </p>
+        <div class="source-settings-link">
+          <span v-if="!preferences.active.codex && !preferences.active.email">No sync sources enabled for this page.</span>
+          <n-button text size="small" @click="activateTab('components', true)">Manage sources</n-button>
+        </div>
 
-        <conversation-sync-panel :active="show && activeTab === 'ai-sync'" />
+        <conversation-sync-panel v-if="preferences.active.codex" :active="show && activeTab === 'ai-sync'" />
 
-        <n-alert v-if="syncing" type="info" :show-icon="false" class="sync-notice">
-          Cancel email sync before saving email settings.
-        </n-alert>
+        <template v-if="preferences.active.email">
+          <n-alert v-if="syncing" type="info" :show-icon="false" class="sync-notice">
+            Cancel email sync before saving email settings.
+          </n-alert>
 
-        <div v-if="loading" class="loading-state">Loading email configuration…</div>
-        <n-alert v-else-if="loadError" type="error" :show-icon="false">{{ loadError }}</n-alert>
+          <div v-if="loading" class="loading-state">Loading email configuration…</div>
+          <n-alert v-else-if="loadError" type="error" :show-icon="false">{{ loadError }}</n-alert>
 
-        <form v-else class="settings-form" @submit.prevent="save">
-          <section class="settings-section">
-            <div class="section-heading">
-              <div>
-                <h3>Email source</h3>
-                <p>Standard IMAP. Message bodies stay out of catendar's database.</p>
+          <form v-else class="settings-form" @submit.prevent="save">
+            <section class="settings-section">
+              <div class="section-heading">
+                <div>
+                  <h3>Email source</h3>
+                  <p>Standard IMAP. Message bodies stay out of catendar's database.</p>
+                </div>
               </div>
-            </div>
 
-            <div class="field-grid two-columns">
-              <label class="field">
-                <span>Email address</span>
-                <n-input v-model:value="email.address" placeholder="you@example.com" @blur="applyEmailPreset" />
-              </label>
-              <label class="field">
-                <span>Username</span>
-                <n-input v-model:value="email.username" placeholder="Defaults to email address" />
-              </label>
-            </div>
-
-            <div class="field-grid server-grid">
-              <label class="field host-field">
-                <span>IMAP host</span>
-                <n-input v-model:value="email.imapHost" placeholder="imap.example.com" />
-              </label>
-              <label class="field">
-                <span>Port</span>
-                <n-input-number v-model:value="email.imapPort" :min="1" :max="65535" />
-              </label>
-              <label class="field">
-                <span>Folder</span>
-                <n-input v-model:value="email.folder" placeholder="INBOX" />
-              </label>
-            </div>
-
-            <div class="credential-row">
-              <label class="field secret-field">
-                <span>Password / app authorization code</span>
-                <n-input
-                  v-model:value="email.secret"
-                  type="password"
-                  show-password-on="click"
-                  :placeholder="setup?.email.hasCredential ? 'Leave blank to keep saved credential' : 'Stored in the system keychain'"
-                />
-              </label>
-              <label class="tls-control">
-                <span>TLS</span>
-                <n-switch v-model:value="email.useTLS" />
-              </label>
-            </div>
-
-            <div class="section-action">
-              <n-button :loading="testing" :disabled="saving || syncing" @click="testConnection">Test connection</n-button>
-              <n-button
-                v-if="syncing"
-                attr-type="button"
-                @click="emit('cancel-email-sync')"
-              >
-                Cancel sync
-              </n-button>
-              <n-button
-                v-else
-                attr-type="button"
-                type="primary"
-                secondary
-                :disabled="saving || testing"
-                @click="emit('email-sync')"
-              >
-                Sync email
-              </n-button>
-              <span v-if="emailSummary" class="email-sync-state">{{ emailSummary }}</span>
-              <span v-if="setup?.email.configured" class="configured-mark">Credential saved in keychain</span>
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <div class="section-heading">
-              <div>
-                <h3>Email agent</h3>
-                <p>The selected CLI is used for email sync. Codex conversations use the Codex path in the panel above.</p>
+              <div class="field-grid two-columns">
+                <label class="field">
+                  <span>Email address</span>
+                  <n-input v-model:value="email.address" placeholder="you@example.com" @blur="applyEmailPreset" />
+                </label>
+                <label class="field">
+                  <span>Username</span>
+                  <n-input v-model:value="email.username" placeholder="Defaults to email address" />
+                </label>
               </div>
+
+              <div class="field-grid server-grid">
+                <label class="field host-field">
+                  <span>IMAP host</span>
+                  <n-input v-model:value="email.imapHost" placeholder="imap.example.com" />
+                </label>
+                <label class="field">
+                  <span>Port</span>
+                  <n-input-number v-model:value="email.imapPort" :min="1" :max="65535" />
+                </label>
+                <label class="field">
+                  <span>Folder</span>
+                  <n-input v-model:value="email.folder" placeholder="INBOX" />
+                </label>
+              </div>
+
+              <div class="credential-row">
+                <label class="field secret-field">
+                  <span>Password / app authorization code</span>
+                  <n-input
+                    v-model:value="email.secret"
+                    type="password"
+                    show-password-on="click"
+                    :placeholder="setup?.email.hasCredential ? 'Leave blank to keep saved credential' : 'Stored in the system keychain'"
+                  />
+                </label>
+                <label class="tls-control">
+                  <span>TLS</span>
+                  <n-switch v-model:value="email.useTLS" />
+                </label>
+              </div>
+
+              <div class="section-action">
+                <n-button :loading="testing" :disabled="saving || syncing" @click="testConnection">Test connection</n-button>
+                <n-button
+                  v-if="syncing"
+                  attr-type="button"
+                  @click="emit('cancel-email-sync')"
+                >
+                  Cancel sync
+                </n-button>
+                <n-button
+                  v-else
+                  attr-type="button"
+                  type="primary"
+                  secondary
+                  :disabled="saving || testing"
+                  @click="emit('email-sync')"
+                >
+                  Sync email
+                </n-button>
+                <span v-if="emailSummary" class="email-sync-state">{{ emailSummary }}</span>
+                <span v-if="setup?.email.configured" class="configured-mark">Credential saved in keychain</span>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <div class="section-heading">
+                <div>
+                  <h3>Email agent</h3>
+                  <p>Choose the local CLI that organizes your email.</p>
+                </div>
+              </div>
+
+              <div class="field-grid two-columns agent-grid">
+                <label class="field">
+                  <span>Agent</span>
+                  <n-select v-model:value="agent.provider" :options="providerOptions" />
+                </label>
+                <label class="field">
+                  <span>Executable path <small>optional</small></span>
+                  <n-input v-model:value="selectedPath" placeholder="Auto detect" />
+                </label>
+              </div>
+
+              <div class="agent-status" :class="{ ready: selectedAvailability?.installed }">
+                <span class="status-dot" />
+                <span v-if="selectedAvailability?.installed">
+                  {{ selectedAvailability.version || selectedAvailability.path }}
+                </span>
+                <span v-else>{{ selectedAvailability?.error || 'CLI not detected' }}</span>
+              </div>
+            </section>
+
+            <div class="privacy-note">
+              Email credentials remain in catendar Core. Email text selected for planning is sent to the chosen agent's model service.
             </div>
 
-            <div class="field-grid two-columns agent-grid">
-              <label class="field">
-                <span>Agent</span>
-                <n-select v-model:value="agent.provider" :options="providerOptions" />
-              </label>
-              <label class="field">
-                <span>Executable path <small>optional</small></span>
-                <n-input v-model:value="selectedPath" placeholder="Auto detect" />
-              </label>
-            </div>
+            <footer class="form-actions">
+              <n-button :disabled="saving || testing" @click="emit('update:show', false)">Cancel</n-button>
+              <n-button type="primary" attr-type="submit" :loading="saving" :disabled="testing || syncing">Save settings</n-button>
+            </footer>
+          </form>
+        </template>
+      </section>
 
-            <div class="agent-status" :class="{ ready: selectedAvailability?.installed }">
-              <span class="status-dot" />
-              <span v-if="selectedAvailability?.installed">
-                {{ selectedAvailability.version || selectedAvailability.path }}
-              </span>
-              <span v-else>{{ selectedAvailability?.error || 'CLI not detected' }}</span>
-            </div>
-          </section>
-
-          <div class="privacy-note">
-            Email credentials remain in catendar Core. Email text selected for planning is sent to the chosen agent's model service.
-          </div>
-
-          <footer class="form-actions">
-            <n-button :disabled="saving || testing" @click="emit('update:show', false)">Cancel</n-button>
-            <n-button type="primary" attr-type="submit" :loading="saving" :disabled="testing || syncing">Save settings</n-button>
-          </footer>
-        </form>
+      <section
+        v-if="activeTab === 'components'"
+        id="settings-panel-components"
+        class="settings-panel"
+        role="tabpanel"
+        aria-labelledby="settings-tab-components"
+        tabindex="0"
+      >
+        <sync-sources-panel />
       </section>
     </n-card>
   </n-modal>
 </template>
 
 <style scoped>
+.source-settings-link {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .settings-card {
   width: min(680px, calc(100vw - 28px));
   max-height: calc(100vh - 24px);
@@ -471,12 +495,6 @@ defineExpose({ dismiss })
   border-radius: 8px;
 }
 
-.ai-tab-intro {
-  margin: 0 0 12px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  line-height: 1.5;
-}
 
 .sync-notice {
   margin-bottom: 12px;

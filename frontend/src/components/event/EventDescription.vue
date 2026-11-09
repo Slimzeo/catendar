@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { DescriptionSegment } from '@/utils/description'
 import { descriptionSegments, isEmailLink } from '@/utils/description'
+import { useSyncSourcesStore } from '@/stores/syncSources'
 import { openExternal } from '@/wails'
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const emit = defineEmits<{
   (event: 'open-email', sourceURL: string): void
 }>()
 
+const syncSources = useSyncSourcesStore()
 const segments = computed(() => descriptionSegments(props.text))
 const descriptionStyle = computed(() => ({
   '--description-lines': String(props.clamp ?? 3)
@@ -21,7 +23,7 @@ const descriptionStyle = computed(() => ({
 function openSegment(segment: DescriptionSegment) {
   if (!segment.href) return
   if (isEmailLink(segment.href)) {
-    emit('open-email', segment.href)
+    if (syncSources.active.email) emit('open-email', segment.href)
     return
   }
   openExternal(segment.href)
@@ -32,7 +34,7 @@ function openSegment(segment: DescriptionSegment) {
   <p class="event-description" :style="descriptionStyle">
     <template v-for="(segment, index) in segments" :key="index">
       <a
-        v-if="segment.type === 'url'"
+        v-if="segment.type === 'url' && (syncSources.active.email || !isEmailLink(segment.href || ''))"
         :href="segment.href"
         @click.stop.prevent="openSegment(segment)"
       >{{ segment.value }}</a>

@@ -1,8 +1,10 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { AISyncState, ChatActivity, ConversationStatus } from '@/types'
 import { conversationApi } from '@/services/api'
 import { useEventsStore } from '@/stores/events'
+import { useCalendarStore, type CalendarView } from './calendar'
+import { useSyncSourcesStore } from './syncSources'
 
 function emptyStatus(): ConversationStatus {
   return {
@@ -40,6 +42,9 @@ function copyActivity(activity: ChatActivity): ChatActivity {
 }
 
 export const useConversationSyncStore = defineStore('conversationSync', () => {
+  const sources = useSyncSourcesStore()
+  const calendar = useCalendarStore()
+  const runOrigin = ref<CalendarView | null>(null)
   const status = ref<ConversationStatus>(emptyStatus())
   const activities = ref<ChatActivity[]>([])
   const loading = ref(false)
@@ -67,6 +72,9 @@ export const useConversationSyncStore = defineStore('conversationSync', () => {
   const busy = computed(() => (
     starting.value || cancelling.value || saving.value || resolving.value.length > 0
   ))
+  watch([running, () => sources.allowsRun('codex', runOrigin.value)], ([active, allowed]) => {
+    if (active && !allowed) void cancel()
+  })
   const pendingActivities = computed(() => activities.value.filter(item => item.state === 'pending'))
   const pendingCount = computed(() => Math.max(status.value.pending, pendingActivities.value.length))
   const recentActivities = computed(() => activities.value.filter(item => item.state !== 'pending').slice(0, 8))
@@ -136,7 +144,8 @@ export const useConversationSyncStore = defineStore('conversationSync', () => {
   }
 
   async function start() {
-    if (running.value || starting.value) return
+    if (!sources.active.codex || running.value || starting.value) return
+    runOrigin.value = calendar.viewMode
     const token = ++mutation
     starting.value = true
     error.value = ''
