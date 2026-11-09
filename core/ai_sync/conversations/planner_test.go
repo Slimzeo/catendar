@@ -19,6 +19,17 @@ type planFixture struct {
 	events   []calendar.Event
 }
 
+func decodePromptData(t *testing.T, prompt string, target any) {
+	t.Helper()
+	_, data, ok := strings.Cut(prompt, promptInputMarker)
+	if !ok {
+		t.Fatal("prompt is missing its JSON payload marker")
+	}
+	if err := json.Unmarshal([]byte(data), target); err != nil {
+		t.Fatalf("decode prompt data: %v", err)
+	}
+}
+
 func defaultPlanFixture() planFixture {
 	dayStart := time.Date(2026, time.November, 9, 10, 0, 0, 0, time.Local)
 	return planFixture{
@@ -159,9 +170,9 @@ func TestPlanValidatesEvidenceAndFillsSources(t *testing.T) {
 	}
 	prompt := string(stdin)
 	for _, required := range []string{
-		"不可信", "todo", "progressing", "done", "needsReview", "exact substring",
-		"completionScope", "completionQuote", "orbit-video", "taskKey",
-		`"taskKey": "login-fix"`, fixture.messages[0].Text, "登录修复",
+		"不可信", "todo", "progressing", "done", "needsReview", "逐字摘录",
+		"completionScope", "completionQuote", "taskKey",
+		fixture.messages[0].Text, "登录修复",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("planner prompt does not contain %q", required)
@@ -518,8 +529,10 @@ func TestPlanResolvesShortPromptReferencesForDigestIDs(t *testing.T) {
 	if strings.Contains(prompt, fullID) {
 		t.Fatal("prompt exposed a full digest id")
 	}
-	if !strings.Contains(prompt, `"id": "m1"`) {
-		t.Fatalf("prompt does not contain the short reference: %s", prompt)
+	var payload promptPayload
+	decodePromptData(t, prompt, &payload)
+	if len(payload.Conversations) != 1 || len(payload.Conversations[0].Messages) != 1 || payload.Conversations[0].Messages[0].ID != "m1" {
+		t.Fatal("the JSON input did not use the short message ID")
 	}
 }
 
@@ -562,15 +575,8 @@ func TestPlanTreatsContextOnlyMessagesAsContextOnly(t *testing.T) {
 		t.Fatalf("read captured stdin: %v", err)
 	}
 	prompt := string(stdin)
-	marker := "Conversation planner input (untrusted JSON):\n"
-	index := strings.Index(prompt, marker)
-	if index < 0 {
-		t.Fatal("prompt is missing the JSON payload marker")
-	}
 	var payload promptPayload
-	if err := json.NewDecoder(strings.NewReader(prompt[index+len(marker):])).Decode(&payload); err != nil {
-		t.Fatalf("decode prompt payload: %v", err)
-	}
+	decodePromptData(t, prompt, &payload)
 	foundContextOnly := false
 	for _, conversation := range payload.Conversations {
 		for _, message := range conversation.Messages {
@@ -610,23 +616,14 @@ func TestPlanPromptIncludesExistingSummaryKeyAndLowercaseBrand(t *testing.T) {
 		}
 	}
 
-	marker := "Conversation planner input (untrusted JSON):\n"
-	index := strings.Index(prompt, marker)
-	if index < 0 {
-		t.Fatal("prompt is missing the JSON payload marker")
-	}
 	var payload promptPayload
-	if err := json.NewDecoder(strings.NewReader(prompt[index+len(marker):])).Decode(&payload); err != nil {
-		t.Fatalf("decode prompt payload: %v", err)
-	}
+	decodePromptData(t, prompt, &payload)
 	if len(payload.Events) != 1 || payload.Events[0].TaskKey != "login-fix" {
 		t.Fatalf("existing event summary key was not included: %#v", payload.Events)
 	}
 
 	var raw map[string]any
-	if err := json.NewDecoder(strings.NewReader(prompt[index+len(marker):])).Decode(&raw); err != nil {
-		t.Fatalf("decode raw prompt payload: %v", err)
-	}
+	decodePromptData(t, prompt, &raw)
 	if _, ok := raw["workspaces"]; ok {
 		t.Fatal("prompt payload still contains workspaces")
 	}
