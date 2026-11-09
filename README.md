@@ -90,6 +90,15 @@ npm run dev
 
 ## AI Sync
 
+在 **Settings → Components → AI Sync sources** 中，分别设置 Board（日看板）和 Month（月历）可用的同步来源。设置自动保存在本机。从同步面板点 **Manage sources** 也能打开这些开关。[查看设置界面](docs/sync-sources.png)
+
+| 页面 | Codex 对话默认值 | 邮件默认值 |
+|---|---|---|
+| Board | 开 | 关 |
+| Month | 开 | 开 |
+
+启用 Codex 后，点击该页工具栏的 **AI Sync** 会整理对话。只启用邮件时，这个按钮会打开邮箱面板，点 **Sync email** 才开始读邮箱。两个来源都关闭时，该页收起工具栏入口，齿轮设置仍可调整开关。关闭邮件的页面也会收起原邮件入口，跳过邮箱配置及钥匙串检查。切换页面可以继续已发起的同步。关闭发起页的对应来源会取消该次同步。
+
 ### Codex 对话 → 今日看板
 
 点工具栏的 **AI Sync**，catendar 通过已登录的本机 Codex 读取过去 **72 小时**内交互会话中的用户消息和助手最终回复，整理到**本地日期的今天**。打开应用、切换看板、查看设置都不会触发读取。这个入口独立于邮箱配置。若未找到 Codex，可在 **Settings → AI Sync → Codex conversations** 填写可执行文件的绝对路径。[Codex App Server](https://developers.openai.com/codex/app-server/) · [Codex 非交互运行](https://developers.openai.com/codex/noninteractive/)
@@ -110,7 +119,7 @@ npm run dev
 2. `core/ai_sync/cli` 将本次同步允许使用的邮件读取、日历查询和批量写入能力封装成统一的 catendar CLI。
 3. `core/ai_sync/agent` 自动启动用户选择的 Codex 或 Claude Code，并给两者同一份任务约束和同一套 CLI。
 
-在 **Settings → AI Sync** 的邮箱区域中配置。
+在启用邮件的页面，打开 **Settings → AI Sync** 的邮箱区域进行配置。
 
 - 配置一个 IMAP 邮箱账户并测试连接；首版支持通用 IMAP，内置 QQ、Gmail、Outlook 和 iCloud 参数预设。
 - 选择 Codex 或 Claude Code。catendar 会自动探测本机命令，也可以填写可执行文件的绝对路径。

@@ -8,6 +8,7 @@ import { eventPhases, isEventPhase } from '@/constants/eventPhases'
 import { useCalendarStore } from '@/stores/calendar'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
+import { useSyncSourcesStore } from '@/stores/syncSources'
 import { useWorkspacesStore } from '@/stores/workspaces'
 import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
@@ -24,6 +25,7 @@ const calendarStore = useCalendarStore()
 const eventsStore = useEventsStore()
 const themeStore = useThemeStore()
 const workspacesStore = useWorkspacesStore()
+const syncSources = useSyncSourcesStore()
 const message = useMessage()
 
 const selectedDate = computed(() => calendarStore.focusedDate)
@@ -363,11 +365,11 @@ function isOverdue(event: CalendarEvent): boolean {
 }
 
 function mailUrl(event: CalendarEvent): string | undefined {
-  return sourceEmailUrl(event.description)
+  return syncSources.active.email ? sourceEmailUrl(event.description) : undefined
 }
 
 function cardDescription(event: CalendarEvent): string {
-  const url = mailUrl(event)
+  const url = sourceEmailUrl(event.description)
   if (!url) return event.description
   return event.description
     .split(url)

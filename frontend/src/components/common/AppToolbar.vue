@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useSyncSourcesStore } from '@/stores/syncSources'
 import { computed, ref } from 'vue'
 import { NButton, NTooltip } from 'naive-ui'
 import type { AISyncState } from '@/types'
@@ -14,6 +15,8 @@ const props = withDefaults(defineProps<{
   conversationState: 'idle',
   conversationPending: 0
 })
+
+const sources = useSyncSourcesStore()
 
 const emit = defineEmits<{
   (event: 'create'): void
@@ -40,9 +43,11 @@ const nextLabel = computed(() => (
 const isAtToday = computed(() => (
   calendarStore.viewMode === 'board' ? calendarStore.isToday : calendarStore.isCurrentMonth
 ))
-const aiSyncBusy = computed(() => props.conversationState === 'running')
+const pendingReviews = computed(() => sources.active.codex ? props.conversationPending : 0)
+const aiSyncBusy = computed(() => sources.active.codex && props.conversationState === 'running')
 const aiSyncLabel = computed(() => {
-  const pending = props.conversationPending
+  if (!sources.active.codex) return 'AI Sync — open email sync'
+  const pending = pendingReviews.value
   if (pending) return `AI Sync — ${pending} conversation ${pending === 1 ? 'change needs' : 'changes need'} review`
   if (aiSyncBusy.value) return 'AI Sync — syncing'
   return 'AI Sync — sync Codex conversations'
@@ -104,11 +109,12 @@ function togglePin() {
 
     <div class="toolbar-actions">
       <n-button
+        v-if="sources.active.codex || sources.active.email"
         secondary
         type="primary"
         size="small"
         class="ai-sync-button"
-        :class="{ busy: aiSyncBusy, review: conversationPending > 0 }"
+        :class="{ busy: aiSyncBusy, review: pendingReviews > 0 }"
         :aria-label="aiSyncLabel"
         :title="aiSyncLabel"
         aria-haspopup="dialog"
@@ -123,10 +129,10 @@ function togglePin() {
           {{ aiSyncBusy ? 'Syncing' : 'AI Sync' }}
         </span>
         <span
-          v-if="conversationPending"
+          v-if="pendingReviews"
           class="ai-sync-badge"
           aria-hidden="true"
-        >{{ conversationPending > 9 ? '9+' : conversationPending }}</span>
+        >{{ pendingReviews > 9 ? '9+' : pendingReviews }}</span>
         <span v-else-if="aiSyncBusy" class="ai-sync-dot" aria-hidden="true" />
       </n-button>
 

@@ -36,5 +36,5 @@ export function sourceEmailUrl(text: string): string | undefined {
 }
 
 export function isEmailLink(url: string): boolean {
-  return url.startsWith('catendar://email/')
+  return url.toLowerCase().startsWith('catendar://email/')
 }

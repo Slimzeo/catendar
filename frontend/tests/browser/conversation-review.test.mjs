@@ -381,6 +381,8 @@ test('conversation review shows full proposals, saves only the Codex path, and r
   try {
     const page = await browser.newPage()
     page.setDefaultTimeout(5000)
+    // Exercise both sources together after the user enables Email on Board.
+    await page.addInitScript(() => localStorage.setItem('catendar-sync-sources-v1', JSON.stringify({ board: { email: true } })))
     await page.addInitScript(seedConversationSync)
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
 
