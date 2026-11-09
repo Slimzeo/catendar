@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"catendar-wails/core/ai_sync"
+	"catendar-wails/core/calendar"
 	"catendar-wails/core/email"
 )
 
@@ -15,17 +16,36 @@ type AISyncSetup struct {
 }
 
 type AISyncApp struct {
-	ctx    context.Context
-	email  *email.Service
-	aiSync *ai_sync.Service
+	ctx           context.Context
+	email         *email.Service
+	aiSync        *ai_sync.Service
+	conversations *ai_sync.ConversationSync
 }
 
-func NewAISyncApp(emailService *email.Service, aiSyncService *ai_sync.Service) *AISyncApp {
-	return &AISyncApp{email: emailService, aiSync: aiSyncService}
+func NewAISyncApp(emailService *email.Service, aiSyncService *ai_sync.Service, chats *ai_sync.ConversationSync) *AISyncApp {
+	return &AISyncApp{email: emailService, aiSync: aiSyncService, conversations: chats}
 }
 
 func (a *AISyncApp) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+func (a *AISyncApp) GetConversationSync() ai_sync.ConversationStatus { return a.conversations.Status() }
+func (a *AISyncApp) StartConversationSync() (ai_sync.ConversationStatus, error) {
+	if a.ctx == nil {
+		return ai_sync.ConversationStatus{}, errors.New("catendar is not ready")
+	}
+	return a.conversations.Start(a.ctx)
+}
+func (a *AISyncApp) CancelConversationSync() bool { return a.conversations.Cancel() }
+func (a *AISyncApp) SaveConversationSyncSettings(codexPath string) (ai_sync.ConversationStatus, error) {
+	return a.conversations.SaveSettings(context.Background(), codexPath)
+}
+func (a *AISyncApp) GetConversationActivity() ([]calendar.ChatActivity, error) {
+	return a.conversations.Activity(context.Background())
+}
+func (a *AISyncApp) ResolveConversationChange(id int64, accept bool) (*calendar.ChatActivity, error) {
+	return a.conversations.Resolve(context.Background(), id, accept)
 }
 
 func (a *AISyncApp) GetAISyncSetup() (*AISyncSetup, error) {

@@ -26,8 +26,18 @@ func testServiceAt(t *testing.T, path string) *Service {
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
 	createEventTestSchema(t, db)
-	if _, err := db.Exec("PRAGMA foreign_keys = ON;" + boardSchema); err != nil {
+	if _, err := db.Exec("PRAGMA foreign_keys = ON;" + boardSchema + chatSchema); err != nil {
 		t.Fatalf("create board schema: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWorkspacesTx(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	return NewService(db)
 }
@@ -51,6 +61,7 @@ func createEventTestSchema(t *testing.T, db *sql.DB) {
 			source_account_id TEXT NOT NULL DEFAULT '',
 			source_message_id TEXT NOT NULL DEFAULT '',
 			source_url TEXT NOT NULL DEFAULT '',
+			workspace_id INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -60,6 +71,7 @@ func createEventTestSchema(t *testing.T, db *sql.DB) {
 	`); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
+
 }
 
 func eventTestStringPointer(value string) *string {

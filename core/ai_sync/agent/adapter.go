@@ -90,6 +90,13 @@ func findExecutable(name, configuredPath string) (string, error) {
 		filepath.Join(home, ".local", "bin", name),
 		filepath.Join(home, ".npm-global", "bin", name),
 	}
+	if runtime.GOOS == "darwin" && name == "codex" {
+		for _, dir := range []string{"/Applications", filepath.Join(home, "Applications")} {
+			candidates = append(candidates,
+				filepath.Join(dir, "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+				filepath.Join(dir, "Codex.app", "Contents", "Resources", "codex"))
+		}
+	}
 	if runtime.GOOS == "windows" {
 		for index := range candidates {
 			candidates[index] += ".exe"

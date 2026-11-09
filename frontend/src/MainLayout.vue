@@ -5,12 +5,15 @@ import { NButton, useMessage } from 'naive-ui'
 import MonthlyCalendar from './components/calendar/MonthlyCalendar.vue'
 import AppToolbar from './components/common/AppToolbar.vue'
 import DailyBoard from './components/board/DailyBoard.vue'
+import WorkspaceBar from './components/board/WorkspaceBar.vue'
 import DayEventsDrawer from './components/event/DayEventsDrawer.vue'
 import DeleteEventDialog from './components/event/DeleteEventDialog.vue'
 import { isPlainEscape, type ShortcutAction } from './shortcuts'
 import { useShortcutKeys } from './composables/useShortcutKeys'
 import { useCalendarStore } from './stores/calendar'
+import { useConversationSyncStore } from './stores/conversationSync'
 import { useEventsStore } from './stores/events'
+import { useWorkspacesStore } from './stores/workspaces'
 import { aiSyncApi } from './services/api'
 import type { AISyncStatus, CalendarEvent, EmailMessage, EventInput, EventPhase } from './types'
 
@@ -23,6 +26,8 @@ const EmailSourceModal = defineAsyncComponent(loadEmailSourceModal)
 
 const calendarStore = useCalendarStore()
 const eventsStore = useEventsStore()
+const workspacesStore = useWorkspacesStore()
+const conversationStore = useConversationSyncStore()
 const message = useMessage()
 
 const showEventModal = ref(false)
@@ -30,6 +35,7 @@ const editingEvent = ref<CalendarEvent | null>(null)
 const defaultDate = ref('')
 const defaultTitle = ref('')
 const defaultPhase = ref<EventPhase>('todo')
+const defaultWorkspaceId = ref(1)
 const modalVariant = ref<'board' | 'calendar'>('calendar')
 const modalBoardDay = ref('')
 const savingEvent = ref(false)
@@ -37,6 +43,7 @@ const initialField = ref<'title' | 'description' | 'result'>('title')
 const board = ref<InstanceType<typeof DailyBoard> | null>(null)
 const boardQuickActive = ref(false)
 const pendingDelete = ref<CalendarEvent | null>(null)
+const workspaceDialogOpen = ref(false)
 
 const showSettings = ref(false)
 const settingsModal = ref<InstanceType<typeof SettingsModal> | null>(null)
@@ -90,6 +97,15 @@ function openBoardFromDrawer(date: string) {
 function openSettings(tab: 'shortcuts' | 'ai-sync') {
   settingsTab.value = tab
   showSettings.value = true
+  if (tab === 'ai-sync') void conversationStore.refresh({ activities: true })
+}
+
+async function openAISync() {
+  openSettings('ai-sync')
+  // The toolbar is the explicit manual trigger. A click during a run only
+  // reveals the current status; it never queues a second run.
+  if (conversationStore.running || conversationStore.starting) return
+  await conversationStore.start()
 }
 
 function defaultCreateDate() {
@@ -104,6 +120,7 @@ function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo',
   defaultDate.value = date
   defaultTitle.value = title
   defaultPhase.value = phase
+  defaultWorkspaceId.value = workspacesStore.createWorkspaceId
   initialField.value = 'title'
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
   modalBoardDay.value = modalVariant.value === 'board' ? date : ''
@@ -180,7 +197,7 @@ async function startAISync() {
     aiSyncStatus.value = await aiSyncApi.start()
     startAISyncPolling()
   } catch (error) {
-    const detail = errorMessage(error, 'Could not start AI Sync')
+    const detail = errorMessage(error, 'Could not start email sync')
     message.error(detail)
     showAISyncStatus.value = false
     if (/not configured|not available|not installed/i.test(detail)) {
@@ -193,7 +210,7 @@ async function cancelAISync() {
   try {
     await aiSyncApi.cancel()
   } catch (error) {
-    message.error(errorMessage(error, 'Could not cancel AI Sync'))
+    message.error(errorMessage(error, 'Could not cancel email sync'))
   }
 }
 
@@ -234,15 +251,15 @@ async function pollAISyncStatus() {
     if (previousState !== 'running') return
     if (status.state === 'succeeded') {
       await eventsStore.fetchEvents()
-      message.success(`AI Sync complete · ${aiSyncCounts.value}`)
+      message.success(`Email sync complete · ${aiSyncCounts.value}`)
     } else if (status.state === 'cancelled') {
-      message.info('AI Sync cancelled')
+      message.info('Email sync cancelled')
     } else if (status.state === 'failed') {
-      message.error(status.message || 'AI Sync failed')
+      message.error(status.message || 'Email sync failed')
     }
   } catch (error) {
     stopAISyncPolling()
-    message.error(errorMessage(error, 'Could not read AI Sync status'))
+    message.error(errorMessage(error, 'Could not read email sync status'))
   }
 }
 
@@ -253,7 +270,7 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 const editingOrDeleting = computed(() => showEventModal.value || !!pendingDelete.value)
-const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value)
+const otherDialogOpen = computed(() => showSettings.value || showEmailSource.value || showDayDrawer.value || workspaceDialogOpen.value)
 const repeatable = new Set<ShortcutAction>(['taskUp', 'taskDown', 'columnLeft', 'columnRight', 'previousDate', 'nextDate'])
 
 function wrapBoardTab(event: KeyboardEvent) {
@@ -269,6 +286,8 @@ function wrapBoardTab(event: KeyboardEvent) {
 }
 
 function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin: EventTarget | null): boolean {
+  // The project dialog has its own focus trap and native Escape handling.
+  if (workspaceDialogOpen.value) return false
   if (otherDialogOpen.value) {
     if (action !== 'dismiss' || isPlainEscape(event, !!tabOrigin)) return false
     if (showSettings.value) return settingsModal.value?.dismiss() ?? false
@@ -339,7 +358,11 @@ watch(editingOrDeleting, async open => {
 watch([() => eventsStore.scope, () => calendarStore.today.getTime()], () => void eventsStore.fetchEvents())
 
 onMounted(() => {
+  void workspacesStore.fetchWorkspaces()
   eventsStore.fetchEvents()
+  // Read the local status once so pending reviews are visible, but never scan
+  // conversations until the user explicitly clicks AI Sync.
+  void conversationStore.refresh({ silent: true })
   requestAnimationFrame(() => {
     void loadEventModal()
   })
@@ -358,6 +381,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopAISyncPolling()
+  conversationStore.stopPolling()
   if (modalPreloadTimer) clearTimeout(modalPreloadTimer)
 })
 </script>
@@ -365,22 +389,28 @@ onUnmounted(() => {
 <template>
   <div class="app-container" @keydown.tab="wrapBoardTab">
     <app-toolbar
-      :syncing="isAISyncing"
+      :conversation-state="conversationStore.status.state"
+      :conversation-pending="conversationStore.pendingCount"
       @create="openCreateModal()"
-      @ai-sync="startAISync"
+      @ai-sync="openAISync"
       @settings="openSettings('shortcuts')"
+    />
+
+    <workspace-bar
+      v-if="calendarStore.viewMode === 'board'"
+      @dialog-state="workspaceDialogOpen = $event"
     />
 
     <transition name="sync-status">
       <div
-        v-if="showAISyncStatus && aiSyncStatus.state !== 'idle'"
+        v-if="showAISyncStatus && aiSyncStatus.state !== 'idle' && !showSettings"
         class="ai-sync-status"
         :class="aiSyncStatus.state"
         role="status"
       >
         <span class="sync-indicator" aria-hidden="true" />
         <div class="sync-copy">
-          <strong>{{ aiSyncStatus.message || 'AI Sync' }}</strong>
+          <strong>{{ aiSyncStatus.message || 'Email sync' }}</strong>
           <span v-if="aiSyncStatus.state === 'running' && aiSyncStatus.emailCount">
             {{ aiSyncStatus.emailCount }} recent emails
             <span v-if="aiSyncStatus.readEmails"> · {{ aiSyncStatus.readEmails }} bodies read</span>
@@ -448,6 +478,7 @@ onUnmounted(() => {
       :default-title="defaultTitle"
       :default-color="eventsStore.nextCreateColor"
       :default-phase="defaultPhase"
+      :default-workspace-id="defaultWorkspaceId"
       :initial-focus="initialField"
       :variant="modalVariant"
       :saving="savingEvent"
@@ -469,7 +500,10 @@ onUnmounted(() => {
       v-model:show="showSettings"
       :initial-tab="settingsTab"
       :syncing="isAISyncing"
+      :email-status="aiSyncStatus"
       @saved="showAISyncStatus = false"
+      @email-sync="startAISync"
+      @cancel-email-sync="cancelAISync"
     />
 
     <EmailSourceModal

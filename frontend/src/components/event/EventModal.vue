@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import { NButton, NCard, NDatePicker, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases } from '@/constants/eventPhases'
+import { useWorkspacesStore } from '@/stores/workspaces'
 import ColorPalettePicker from './ColorPalettePicker.vue'
 
 const props = withDefaults(defineProps<{
@@ -13,6 +14,7 @@ const props = withDefaults(defineProps<{
   defaultTitle?: string
   defaultColor: string
   defaultPhase?: EventPhase
+  defaultWorkspaceId?: number
   initialFocus?: 'title' | 'description' | 'result'
   variant?: 'board' | 'calendar'
   saving?: boolean
@@ -21,6 +23,7 @@ const props = withDefaults(defineProps<{
   defaultDate: '',
   defaultTitle: '',
   defaultPhase: 'todo',
+  defaultWorkspaceId: 1,
   initialFocus: 'title',
   variant: 'calendar',
   saving: false
@@ -35,6 +38,7 @@ const emit = defineEmits<{
 const titleInputRef = ref<{ focus: () => void } | null>(null)
 const descriptionInputRef = ref<{ focus: () => void } | null>(null)
 const resultInputRef = ref<{ focus: () => void } | null>(null)
+const workspacesStore = useWorkspacesStore()
 const title = ref('')
 const description = ref('')
 const result = ref('')
@@ -47,12 +51,17 @@ const selectedColor = ref(props.defaultColor)
 const bold = ref(false)
 const phase = ref<EventPhase>('todo')
 const deadline = ref('')
+const workspaceId = ref(props.defaultWorkspaceId)
 const formError = ref('')
 const titleError = ref('')
 const showCalendarDetails = ref(false)
 let initializing = false
 
 const phaseOptions = eventPhases.map(value => ({ label: value, value }))
+const workspaceOptions = computed(() => workspacesStore.workspaces.map(item => ({
+  label: item.name,
+  value: item.id
+})))
 
 const isEditing = computed(() => Boolean(props.event?.id))
 const isTask = computed(() => props.variant === 'board')
@@ -114,6 +123,7 @@ function initializeForm() {
       bold.value = props.event.bold
       phase.value = props.event.phase || props.defaultPhase
       deadline.value = props.event.deadline || ''
+      workspaceId.value = props.event.workspaceId || props.defaultWorkspaceId
       return
     }
 
@@ -130,6 +140,7 @@ function initializeForm() {
     bold.value = false
     phase.value = props.defaultPhase
     deadline.value = ''
+    workspaceId.value = props.defaultWorkspaceId
   } finally {
     initializing = false
   }
@@ -189,7 +200,8 @@ function handleSave() {
     end,
     allDay: allDay.value,
     color: selectedColor.value,
-    bold: bold.value
+    bold: bold.value,
+    workspaceId: workspaceId.value || 1
   }
   if (phase.value !== props.event?.phase) input.phase = phase.value
   if (trimmedDeadline !== (props.event?.deadline || '')) input.deadline = trimmedDeadline
@@ -314,6 +326,16 @@ function handleSave() {
               aria-label="Phase"
             />
           </div>
+        </div>
+
+        <div class="form-group project-field">
+          <label>Project</label>
+          <n-select
+            v-model:value="workspaceId"
+            :options="workspaceOptions"
+            :disabled="saving"
+            aria-label="Project board"
+          />
         </div>
 
         <div class="calendar-details">

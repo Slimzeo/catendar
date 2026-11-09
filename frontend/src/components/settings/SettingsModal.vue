@@ -12,8 +12,9 @@ import {
   useMessage
 } from 'naive-ui'
 import { aiSyncApi } from '@/services/api'
+import ConversationSyncPanel from '@/components/ai-sync/ConversationSyncPanel.vue'
 import KeyboardShortcutsPanel from '@/components/settings/KeyboardShortcutsPanel.vue'
-import type { AIProvider, AISyncSetup, EmailAccountInput } from '@/types'
+import type { AIProvider, AISyncSetup, AISyncStatus, EmailAccountInput } from '@/types'
 
 type SettingsTab = 'shortcuts' | 'ai-sync'
 
@@ -21,14 +22,18 @@ const props = withDefaults(defineProps<{
   show: boolean
   initialTab?: SettingsTab
   syncing?: boolean
+  emailStatus?: AISyncStatus | null
 }>(), {
   initialTab: 'shortcuts',
-  syncing: false
+  syncing: false,
+  emailStatus: null
 })
 
 const emit = defineEmits<{
   (event: 'update:show', value: boolean): void
   (event: 'saved'): void
+  (event: 'email-sync'): void
+  (event: 'cancel-email-sync'): void
 }>()
 
 const message = useMessage()
@@ -77,6 +82,21 @@ const selectedPath = computed({
     if (agent.provider === 'codex') agent.codexPath = value
     else agent.claudePath = value
   }
+})
+
+const emailSummary = computed(() => {
+  const status = props.emailStatus
+  if (!status || status.state === 'idle') return ''
+  if (status.state === 'running') {
+    const parts = ['Email sync running']
+    if (status.emailCount) parts.push(`${status.emailCount} recent emails`)
+    if (status.readEmails) parts.push(`${status.readEmails} bodies read`)
+    return parts.join(' · ')
+  }
+  if (status.state === 'succeeded') {
+    return `${status.created} created · ${status.skipped} skipped${status.rejected ? ` · ${status.rejected} rejected` : ''}`
+  }
+  return status.message || `Email sync ${status.state}`
 })
 
 watch(() => props.show, show => {
@@ -267,20 +287,21 @@ defineExpose({ dismiss })
         tabindex="0"
       >
         <p class="ai-tab-intro">
-          Read recent email through catendar Core, then let your local agent plan the calendar.
+          Codex conversations and email sync are independent sources. Configure either one below.
         </p>
 
+        <conversation-sync-panel :active="show && activeTab === 'ai-sync'" />
+
         <n-alert v-if="syncing" type="info" :show-icon="false" class="sync-notice">
-          Cancel AI Sync before saving AI settings.
+          Cancel email sync before saving email settings.
         </n-alert>
 
-        <div v-if="loading" class="loading-state">Loading local configuration…</div>
+        <div v-if="loading" class="loading-state">Loading email configuration…</div>
         <n-alert v-else-if="loadError" type="error" :show-icon="false">{{ loadError }}</n-alert>
 
         <form v-else class="settings-form" @submit.prevent="save">
           <section class="settings-section">
             <div class="section-heading">
-              <span class="step">01</span>
               <div>
                 <h3>Email source</h3>
                 <p>Standard IMAP. Message bodies stay out of catendar's database.</p>
@@ -331,16 +352,33 @@ defineExpose({ dismiss })
 
             <div class="section-action">
               <n-button :loading="testing" :disabled="saving || syncing" @click="testConnection">Test connection</n-button>
+              <n-button
+                v-if="syncing"
+                attr-type="button"
+                @click="emit('cancel-email-sync')"
+              >
+                Cancel sync
+              </n-button>
+              <n-button
+                v-else
+                attr-type="button"
+                type="primary"
+                secondary
+                :disabled="saving || testing"
+                @click="emit('email-sync')"
+              >
+                Sync email
+              </n-button>
+              <span v-if="emailSummary" class="email-sync-state">{{ emailSummary }}</span>
               <span v-if="setup?.email.configured" class="configured-mark">Credential saved in keychain</span>
             </div>
           </section>
 
           <section class="settings-section">
             <div class="section-heading">
-              <span class="step">02</span>
               <div>
-                <h3>Local agent</h3>
-                <p>catendar invokes the selected CLI automatically when you click AI Sync.</p>
+                <h3>Email agent</h3>
+                <p>The selected CLI is used for email sync. Codex conversations use the Codex path in the panel above.</p>
               </div>
             </div>
 
@@ -486,19 +524,6 @@ defineExpose({ dismiss })
   font-size: 11px;
 }
 
-.step {
-  display: grid;
-  width: 27px;
-  height: 27px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--primary-muted);
-  color: var(--primary-color);
-  font-size: 9px;
-  font-weight: 800;
-}
-
 .field-grid {
   display: grid;
   gap: 12px;
@@ -560,11 +585,21 @@ defineExpose({ dismiss })
   align-items: center;
   gap: 10px;
   margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 .configured-mark {
   color: var(--text-tertiary);
   font-size: 10px;
+}
+
+.email-sync-state {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-grid {
