@@ -1,13 +1,17 @@
 import type {
   AISettings,
   AISyncSetup,
+  AISyncState,
   AISyncStatus,
   CalendarEvent,
+  ChatActivity,
+  ConversationStatus,
   EmailAccount,
   EmailAccountInput,
   EmailMessage,
   EventInput,
-  EventPhase
+  EventPhase,
+  Workspace
 } from '@/types'
 import { isEventPhase } from '@/constants/eventPhases'
 
@@ -19,7 +23,10 @@ import {
   UpdateEvent,
   DeleteEvent,
   SetEventPhase,
-  SetBoardEventPhase
+  SetBoardEventPhase,
+  ListWorkspaces,
+  CreateWorkspace,
+  UpdateWorkspace
 } from '../../wailsjs/go/main/CalendarApp'
 import {
   CancelAISync,
@@ -29,13 +36,21 @@ import {
   SaveAISettings,
   SaveEmailAccount,
   StartAISync,
-  TestEmailAccount
+  TestEmailAccount,
+  GetConversationSync,
+  StartConversationSync,
+  CancelConversationSync,
+  SaveConversationSyncSettings,
+  GetConversationActivity,
+  ResolveConversationChange
 } from '../../wailsjs/go/main/AISyncApp'
 
 function normalizeEvent(raw: Awaited<ReturnType<typeof CreateEvent>>): CalendarEvent {
+  const workspaceId = raw.workspaceId
   return {
     ...raw,
     phase: isEventPhase(raw.phase) ? raw.phase : 'todo',
+    workspaceId: Number.isFinite(workspaceId) && workspaceId > 0 ? workspaceId : 1,
     deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined
   }
 }
@@ -76,6 +91,61 @@ export const eventApi = {
   deleteEvent: async (id: number): Promise<void> => {
     await DeleteEvent(id)
   }
+}
+
+const previewWorkspaces: Workspace[] = [
+  { id: 1, name: 'Daily Routine', hint: '' },
+  { id: 2, name: 'Seekino', hint: '' },
+  { id: 3, name: '个人 IP 打造', hint: '' }
+]
+// Only a running desktop backend can persist project or task changes.
+export const workspaceApi = {
+  list: async (): Promise<Workspace[]> => 'go' in window ? ListWorkspaces() : previewWorkspaces,
+  create: CreateWorkspace,
+  update: UpdateWorkspace
+}
+
+const emptyConversationStatus = (overrides: Partial<ConversationStatus> = {}): ConversationStatus => ({
+  state: 'idle',
+  message: '',
+  codexPath: '',
+  runId: '',
+  lastSyncedAt: '',
+  sources: 0,
+  created: 0,
+  updated: 0,
+  pending: 0,
+  skipped: 0,
+  ...overrides
+})
+
+function normalizeConversationStatus(raw: Partial<ConversationStatus> | null | undefined): ConversationStatus {
+  const states: AISyncState[] = ['idle', 'running', 'succeeded', 'failed', 'cancelled']
+  const state = raw?.state && states.includes(raw.state) ? raw.state : 'idle'
+  return emptyConversationStatus({
+    state,
+    message: raw?.message ?? '',
+    codexPath: raw?.codexPath ?? '',
+    runId: raw?.runId ?? '',
+    lastSyncedAt: raw?.lastSyncedAt ?? '',
+    sources: raw?.sources ?? 0,
+    created: raw?.created ?? 0,
+    updated: raw?.updated ?? 0,
+    pending: raw?.pending ?? 0,
+    skipped: raw?.skipped ?? 0
+  })
+}
+
+export const conversationApi = {
+  supported: () => 'go' in window,
+  status: async (): Promise<ConversationStatus> => 'go' in window
+    ? normalizeConversationStatus(await GetConversationSync() as ConversationStatus)
+    : emptyConversationStatus(),
+  start: async () => normalizeConversationStatus(await StartConversationSync() as ConversationStatus),
+  cancel: CancelConversationSync,
+  saveSettings: async (codexPath: string) => normalizeConversationStatus(await SaveConversationSyncSettings(codexPath) as ConversationStatus),
+  activity: async (): Promise<ChatActivity[]> => 'go' in window ? await GetConversationActivity() as ChatActivity[] : [],
+  resolve: async (id: number, accept: boolean) => await ResolveConversationChange(id, accept) as ChatActivity
 }
 
 const browserSetup: AISyncSetup = {

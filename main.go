@@ -39,7 +39,7 @@ func main() {
 		log.Fatalf("Failed to initialize catendar Core: %v", err)
 	}
 	calendarApp := NewCalendarApp(backend.Calendar)
-	aiSyncApp := NewAISyncApp(backend.Email, backend.AISync)
+	aiSyncApp := NewAISyncApp(backend.Email, backend.AISync, backend.Conversations)
 	var shutdownOnce sync.Once
 	shutdown := func() {
 		shutdownOnce.Do(func() {

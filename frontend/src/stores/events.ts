@@ -5,9 +5,11 @@ import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { randomEventColor } from '@/constants/eventColors'
 import { eventApi } from '@/services/api'
 import { useCalendarStore } from '@/stores/calendar'
+import { useWorkspacesStore } from '@/stores/workspaces'
 
 export const useEventsStore = defineStore('events', () => {
   const calendar = useCalendarStore()
+  const workspaces = useWorkspacesStore()
   const events = ref<CalendarEvent[]>([])
   const nextCreateColor = ref(randomEventColor())
   const loading = ref(false)
@@ -19,7 +21,9 @@ export const useEventsStore = defineStore('events', () => {
   let latestFetch = 0
 
   function boardEventsForDay(day: string): CalendarEvent[] {
-    return loadedScope.value === `board/${day}` ? events.value : []
+    const rows = loadedScope.value === `board/${day}` ? events.value : []
+    if (workspaces.selectedId === 0) return rows
+    return rows.filter(event => (event.workspaceId || 1) === workspaces.selectedId)
   }
 
   const eventsByDate = computed(() => {

@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { NButton, NTooltip } from 'naive-ui'
+import type { AISyncState } from '@/types'
 import type { CalendarView } from '@/stores/calendar'
 import { useCalendarStore } from '@/stores/calendar'
 import { useThemeStore } from '@/stores/theme'
 import { setAlwaysOnTop } from '@/wails'
 
-defineProps<{
-  syncing: boolean
-}>()
+const props = withDefaults(defineProps<{
+  conversationState?: AISyncState
+  conversationPending?: number
+}>(), {
+  conversationState: 'idle',
+  conversationPending: 0
+})
 
 const emit = defineEmits<{
   (event: 'create'): void
@@ -35,6 +40,13 @@ const nextLabel = computed(() => (
 const isAtToday = computed(() => (
   calendarStore.viewMode === 'board' ? calendarStore.isToday : calendarStore.isCurrentMonth
 ))
+const aiSyncBusy = computed(() => props.conversationState === 'running')
+const aiSyncLabel = computed(() => {
+  const pending = props.conversationPending
+  if (pending) return `AI Sync — ${pending} conversation ${pending === 1 ? 'change needs' : 'changes need'} review`
+  if (aiSyncBusy.value) return 'AI Sync — syncing'
+  return 'AI Sync — sync Codex conversations'
+})
 
 function switchView(view: CalendarView) {
   calendarStore.setView(view)
@@ -96,9 +108,10 @@ function togglePin() {
         type="primary"
         size="small"
         class="ai-sync-button"
-        :loading="syncing"
-        :disabled="syncing"
-        :aria-label="syncing ? 'Syncing' : 'AI Sync'"
+        :class="{ busy: aiSyncBusy, review: conversationPending > 0 }"
+        :aria-label="aiSyncLabel"
+        :title="aiSyncLabel"
+        aria-haspopup="dialog"
         @click="emit('ai-sync')"
       >
         <template #icon>
@@ -106,7 +119,15 @@ function togglePin() {
             <path d="m10 2 1.1 4.2L15 8l-3.9 1.8L10 14l-1.1-4.2L5 8l3.9-1.8L10 2ZM15.5 13l.6 2.1L18 16l-1.9.9-.6 2.1-.6-2.1L13 16l1.9-.9.6-2.1Z" />
           </svg>
         </template>
-        <span class="ai-sync-label">{{ syncing ? 'Syncing' : 'AI Sync' }}</span>
+        <span class="ai-sync-label">
+          {{ aiSyncBusy ? 'Syncing' : 'AI Sync' }}
+        </span>
+        <span
+          v-if="conversationPending"
+          class="ai-sync-badge"
+          aria-hidden="true"
+        >{{ conversationPending > 9 ? '9+' : conversationPending }}</span>
+        <span v-else-if="aiSyncBusy" class="ai-sync-dot" aria-hidden="true" />
       </n-button>
 
       <n-button
@@ -354,6 +375,43 @@ function togglePin() {
 
 .ai-sync-button {
   margin-right: 2px;
+}
+
+.ai-sync-button :deep(.n-button__content) {
+  gap: 5px;
+}
+
+.ai-sync-badge {
+  display: inline-grid;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--danger-color);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.ai-sync-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ai-sync-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-sync-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-sync-dot {
+    animation: none;
+  }
 }
 
 @media (max-width: 860px) {

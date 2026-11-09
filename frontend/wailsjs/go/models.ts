@@ -73,6 +73,36 @@ export namespace ai_sync {
 		    return a;
 		}
 	}
+	export class ConversationStatus {
+	    state: string;
+	    message: string;
+	    codexPath: string;
+	    runId: string;
+	    lastSyncedAt: string;
+	    sources: number;
+	    created: number;
+	    updated: number;
+	    pending: number;
+	    skipped: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ConversationStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.message = source["message"];
+	        this.codexPath = source["codexPath"];
+	        this.runId = source["runId"];
+	        this.lastSyncedAt = source["lastSyncedAt"];
+	        this.sources = source["sources"];
+	        this.created = source["created"];
+	        this.updated = source["updated"];
+	        this.pending = source["pending"];
+	        this.skipped = source["skipped"];
+	    }
+	}
 
 	export class Status {
 	    runId?: string;
@@ -137,6 +167,74 @@ export namespace ai_sync {
 
 export namespace calendar {
 
+	export class ChatEvidence {
+	    id: string;
+	    threadId: string;
+	    threadTitle: string;
+	    at: number;
+	    quote: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ChatEvidence(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.threadTitle = source["threadTitle"];
+	        this.at = source["at"];
+	        this.quote = source["quote"];
+	    }
+	}
+	export class ChatChange {
+	    source: ChatEvidence;
+	    taskKey: string;
+	    eventId: number;
+	    workspaceId: number;
+	    title: string;
+	    phase: string;
+	    description: string;
+	    result: string;
+	    needsReview: boolean;
+	    baseUpdated: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ChatChange(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = this.convertValues(source["source"], ChatEvidence);
+	        this.taskKey = source["taskKey"];
+	        this.eventId = source["eventId"];
+	        this.workspaceId = source["workspaceId"];
+	        this.title = source["title"];
+	        this.phase = source["phase"];
+	        this.description = source["description"];
+	        this.result = source["result"];
+	        this.needsReview = source["needsReview"];
+	        this.baseUpdated = source["baseUpdated"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Event {
 	    id: number;
 	    title: string;
@@ -149,6 +247,7 @@ export namespace calendar {
 	    bold: boolean;
 	    phase: string;
 	    deadline?: string;
+	    workspaceId: number;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -171,6 +270,7 @@ export namespace calendar {
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
+	        this.workspaceId = source["workspaceId"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
@@ -193,6 +293,51 @@ export namespace calendar {
 		    return a;
 		}
 	}
+	export class ChatActivity {
+	    current?: Event;
+	    id: number;
+	    day: string;
+	    state: string;
+	    reason: string;
+	    beforePhase: string;
+	    change: ChatChange;
+
+	    static createFrom(source: any = {}) {
+	        return new ChatActivity(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current = this.convertValues(source["current"], Event);
+	        this.id = source["id"];
+	        this.day = source["day"];
+	        this.state = source["state"];
+	        this.reason = source["reason"];
+	        this.beforePhase = source["beforePhase"];
+	        this.change = this.convertValues(source["change"], ChatChange);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+
+
 	export class EventInput {
 	    title: string;
 	    start: string;
@@ -205,6 +350,7 @@ export namespace calendar {
 	    phase?: string;
 	    deadline?: string;
 	    boardDay?: string;
+	    workspaceId?: number;
 
 	    static createFrom(source: any = {}) {
 	        return new EventInput(source);
@@ -223,6 +369,23 @@ export namespace calendar {
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
 	        this.boardDay = source["boardDay"];
+	        this.workspaceId = source["workspaceId"];
+	    }
+	}
+	export class Workspace {
+	    id: number;
+	    name: string;
+	    hint: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Workspace(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.hint = source["hint"];
 	    }
 	}
 

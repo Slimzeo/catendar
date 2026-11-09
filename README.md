@@ -14,7 +14,8 @@ catendar 是一个打开即显示今日看板的桌面日历。任务保存在�
 - `100%–150%` 日历缩放；缩放后可滚动或右键拖动画布
 - 浅色/深色主题、事件时间显隐，设置会保存在本机
 - 窗口置顶、关闭后驻留系统托盘
-- AI Sync：自动调用本机 Codex 或 Claude Code，从最近 30 天邮件中整理并批量更新日历
+- 项目看板和统一的 All 视图，同一张卡可以在两个视图里编辑
+- 点 AI Sync 用本机 Codex 整理过去 72 小时的对话，或从设置中单独同步邮箱
 
 ## 使用
 
@@ -27,6 +28,10 @@ catendar 是一个打开即显示今日看板的桌面日历。任务保存在�
 例如，周一开始、周五截止的任务，周二仍可继续处理。中间几天没有打开应用也能接着做。升级时会接续昨天的任务，以及原日程更早、但昨天或今天更新过的未完成卡片。
 
 旧版事件按原日期进入 `todo`，原有时间、颜色、描述和邮件来源随任务保留。邮件同步新增的任务也进入 `todo`，再次同步同一条日程时会保留已设置的阶段。
+
+项目栏默认选中 **All**，同屏显示当天所有项目的卡片，卡片上标有归属。选择 **Daily Routine**、**Seekino** 或 **个人 IP 打造** 即可只看该项目。项目栏右侧的 `+` 可新建看板，项目名称旁的更多按钮可修改名称和匹配提示。提示可以写仓库名、简称或项目关键词，供 Codex 归类。升级时，已有卡片归入 Daily Routine。可以在卡片详情的项目字段中重新归类。
+
+在项目看板按 `A` 或点列头的 `+`，新卡自动归入当前项目。在 All 里快速新建的卡归入 Daily Routine，也可以点 `Details…` 选择项目。All 和项目视图共享卡片 ID，完成状态及跨日记录同步可见。
 
 每日看板的完整交互和数据约定见 [docs/design/daily-kanban.md](docs/design/daily-kanban.md)。
 
@@ -85,17 +90,31 @@ npm run dev
 
 ## AI Sync
 
-AI Sync 由三层组成，Codex 和 Claude Code 只是在最外层使用不同的启动适配器：
+### Codex 对话 → 今日看板
+
+点工具栏的 **AI Sync**，catendar 通过已登录的本机 Codex 读取过去 **72 小时**内交互会话中的用户消息和助手最终回复，整理到**本地日期的今天**。打开应用、切换看板、查看设置都不会触发读取。这个入口独立于邮箱配置。若未找到 Codex，可在 **Settings → AI Sync → Codex conversations** 填写可执行文件的绝对路径。[Codex App Server](https://developers.openai.com/codex/app-server/) · [Codex 非交互运行](https://developers.openai.com/codex/noninteractive/)
+
+| 对话中的证据 | 看板阶段 |
+|---|---|
+| 明确约定要做，尚未开始 | `todo` |
+| 已经开始，并有具体进展 | `progressing`，可以附上阶段成果 |
+| 明确完成，能说出交付物或结果 | `done`，结果显示在标题下 |
+
+整理器会参考项目名、匹配提示和今天的已有卡片。明确的更新会自动写入，来源引用和会话名可在同步面板查看。遇到手动编辑冲突、阶段回退或归属不清，先显示待确认项。点击 **Apply** 接受这项变更，或用 **Keep current** 保留原卡。一次同步可取消，再次点击会从已处理的消息接着整理。没有新增内容时会跳过模型调用。[查看冲突确认面板](docs/conversation-review.png)
+
+### 邮箱 → 日历
+
+邮件同步包含三层。Codex 和 Claude Code 使用各自的本地启动适配器。
 
 1. `core/email` 在 Go Core 内连接邮箱，读取最近 30 天邮件；邮箱密码或应用专用密码不会交给 Agent。
 2. `core/ai_sync/cli` 将本次同步允许使用的邮件读取、日历查询和批量写入能力封装成统一的 catendar CLI。
 3. `core/ai_sync/agent` 自动启动用户选择的 Codex 或 Claude Code，并给两者同一份任务约束和同一套 CLI。
 
-在工具栏打开 AI Sync 设置后：
+在 **Settings → AI Sync** 的邮箱区域中配置。
 
 - 配置一个 IMAP 邮箱账户并测试连接；首版支持通用 IMAP，内置 QQ、Gmail、Outlook 和 iCloud 参数预设。
 - 选择 Codex 或 Claude Code。catendar 会自动探测本机命令，也可以填写可执行文件的绝对路径。
-- 点击工具栏的 `AI Sync`。应用会在后台自动调用 Agent，无需用户另外打开终端或复制提示词。
+- 点击 **Sync email** 读取邮件并开始整理。
 
 QQ 邮箱使用 `imap.qq.com:993` 和 TLS。需要先在 QQ 邮箱网页设置中开启 IMAP/SMTP 服务并生成授权码，然后把授权码填入 catendar 的 `Password / app authorization code`，不要填写 QQ 登录密码。
 

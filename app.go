@@ -41,3 +41,15 @@ func (a *CalendarApp) SetEventPhase(id int64, phase string) (*calendar.Event, er
 func (a *CalendarApp) DeleteEvent(id int64) error {
 	return a.calendar.DeleteEvent(context.Background(), id)
 }
+
+func (a *CalendarApp) ListWorkspaces() ([]calendar.Workspace, error) {
+	return a.calendar.ListWorkspaces(context.Background())
+}
+
+func (a *CalendarApp) CreateWorkspace(name string, hint string) (*calendar.Workspace, error) {
+	return a.calendar.CreateWorkspace(context.Background(), name, hint)
+}
+
+func (a *CalendarApp) UpdateWorkspace(id int64, name string, hint string) (*calendar.Workspace, error) {
+	return a.calendar.UpdateWorkspace(context.Background(), id, name, hint)
+}

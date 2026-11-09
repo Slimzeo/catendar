@@ -1,5 +1,11 @@
 export type EventPhase = 'todo' | 'progressing' | 'done'
 
+export interface Workspace {
+  id: number
+  name: string
+  hint: string
+}
+
 export interface CalendarEvent {
   id: number
   title: string
@@ -12,6 +18,7 @@ export interface CalendarEvent {
   bold: boolean
   phase: EventPhase
   deadline?: string
+  workspaceId: number
   createdAt: string
   updatedAt: string
 }
@@ -28,6 +35,7 @@ export interface EventInput {
   phase?: EventPhase
   deadline?: string
   boardDay?: string
+  workspaceId?: number
 }
 
 export interface DayCell {
@@ -112,4 +120,50 @@ export interface AISyncStatus {
   conflicts: number
   startedAt?: string
   finishedAt?: string
+}
+
+export interface ConversationStatus {
+  state: AISyncState
+  message: string
+  codexPath: string
+  runId: string
+  lastSyncedAt: string
+  sources: number
+  created: number
+  updated: number
+  pending: number
+  skipped: number
+}
+
+export interface ChatEvidence {
+  id: string
+  threadId: string
+  threadTitle: string
+  at: number
+  quote: string
+}
+
+export interface ChatChange {
+  source: ChatEvidence
+  taskKey: string
+  eventId: number
+  workspaceId: number
+  title: string
+  phase: EventPhase
+  description: string
+  result: string
+  needsReview: boolean
+  baseUpdated: string
+}
+
+export type ChatActivityState = 'pending' | 'applied' | 'dismissed'
+
+export interface ChatActivity {
+  current?: CalendarEvent
+  id: number
+  day: string
+  state: ChatActivityState
+  reason: string
+  beforePhase: string
+  change: ChatChange
 }

@@ -14,10 +14,11 @@ type Options struct {
 }
 
 type Core struct {
-	db       *sql.DB
-	Calendar *calendar.Service
-	Email    *email.Service
-	AISync   *ai_sync.Service
+	db            *sql.DB
+	Calendar      *calendar.Service
+	Email         *email.Service
+	AISync        *ai_sync.Service
+	Conversations *ai_sync.ConversationSync
 }
 
 func Open(databasePath string, options Options) (*Core, error) {
@@ -29,16 +30,23 @@ func Open(databasePath string, options Options) (*Core, error) {
 	calendarService := calendar.NewService(db)
 	emailService := email.NewService(db, email.NewKeyringCredentials(), email.NewIMAPReader())
 	aiSyncService := ai_sync.NewService(db, emailService, calendarService, options.ExecutablePath)
+	conversationSync, err := ai_sync.NewConversationSync(db, calendarService)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open conversation sync: %w", err)
+	}
 
 	return &Core{
-		db:       db,
-		Calendar: calendarService,
-		Email:    emailService,
-		AISync:   aiSyncService,
+		db:            db,
+		Calendar:      calendarService,
+		Email:         emailService,
+		AISync:        aiSyncService,
+		Conversations: conversationSync,
 	}, nil
 }
 
 func (c *Core) Close() error {
+	c.Conversations.Shutdown()
 	c.AISync.Shutdown()
 	if err := c.db.Close(); err != nil {
 		return fmt.Errorf("close database: %w", err)

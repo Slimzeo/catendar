@@ -4,14 +4,20 @@ import {calendar} from '../models';
 
 export function CreateEvent(arg1:calendar.EventInput):Promise<calendar.Event>;
 
+export function CreateWorkspace(arg1:string,arg2:string):Promise<calendar.Workspace>;
+
 export function DeleteEvent(arg1:number):Promise<void>;
 
 export function GetBoardEvents(arg1:string):Promise<Array<calendar.Event>>;
 
 export function GetEvents(arg1:string,arg2:string):Promise<Array<calendar.Event>>;
 
+export function ListWorkspaces():Promise<Array<calendar.Workspace>>;
+
 export function SetBoardEventPhase(arg1:number,arg2:string,arg3:string):Promise<calendar.Event>;
 
 export function SetEventPhase(arg1:number,arg2:string):Promise<calendar.Event>;
 
 export function UpdateEvent(arg1:number,arg2:calendar.EventInput):Promise<calendar.Event>;
+
+export function UpdateWorkspace(arg1:number,arg2:string,arg3:string):Promise<calendar.Workspace>;

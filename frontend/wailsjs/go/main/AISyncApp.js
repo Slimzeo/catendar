@@ -6,6 +6,10 @@ export function CancelAISync() {
   return window['go']['main']['AISyncApp']['CancelAISync']();
 }
 
+export function CancelConversationSync() {
+  return window['go']['main']['AISyncApp']['CancelConversationSync']();
+}
+
 export function GetAISyncSetup() {
   return window['go']['main']['AISyncApp']['GetAISyncSetup']();
 }
@@ -14,12 +18,28 @@ export function GetAISyncStatus() {
   return window['go']['main']['AISyncApp']['GetAISyncStatus']();
 }
 
+export function GetConversationActivity() {
+  return window['go']['main']['AISyncApp']['GetConversationActivity']();
+}
+
+export function GetConversationSync() {
+  return window['go']['main']['AISyncApp']['GetConversationSync']();
+}
+
 export function GetSourceEmail(arg1) {
   return window['go']['main']['AISyncApp']['GetSourceEmail'](arg1);
 }
 
+export function ResolveConversationChange(arg1, arg2) {
+  return window['go']['main']['AISyncApp']['ResolveConversationChange'](arg1, arg2);
+}
+
 export function SaveAISettings(arg1) {
   return window['go']['main']['AISyncApp']['SaveAISettings'](arg1);
+}
+
+export function SaveConversationSyncSettings(arg1) {
+  return window['go']['main']['AISyncApp']['SaveConversationSyncSettings'](arg1);
 }
 
 export function SaveEmailAccount(arg1) {
@@ -28,6 +48,10 @@ export function SaveEmailAccount(arg1) {
 
 export function StartAISync() {
   return window['go']['main']['AISyncApp']['StartAISync']();
+}
+
+export function StartConversationSync() {
+  return window['go']['main']['AISyncApp']['StartConversationSync']();
 }
 
 export function TestEmailAccount(arg1) {

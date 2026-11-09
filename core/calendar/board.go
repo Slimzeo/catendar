@@ -18,6 +18,7 @@ const boardSchema = `
 		title TEXT NOT NULL, start TEXT NOT NULL, end TEXT, color TEXT NOT NULL,
 		all_day INTEGER NOT NULL, description TEXT NOT NULL, result TEXT NOT NULL,
 		bold INTEGER NOT NULL, phase TEXT NOT NULL, deadline TEXT NOT NULL,
+		workspace_id INTEGER NOT NULL DEFAULT 1,
 		created_at DATETIME, updated_at DATETIME,
 		PRIMARY KEY (event_id, day)
 	);
@@ -27,7 +28,7 @@ const boardSchema = `
 `
 
 const eventFields = `title, start, end, color, all_day, description, result,
-	bold, phase, deadline, created_at, updated_at`
+	bold, phase, deadline, workspace_id, created_at, updated_at`
 
 // Scheduled dates use the same wall date as the month calendar. Audit
 // timestamps, in contrast, are instants and must be converted to local time.
@@ -60,6 +61,17 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, boardSchema); err != nil {
+		return err
+	}
+	if err := ensureWorkspacesTx(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, chatSchema); err != nil {
+		return fmt.Errorf("create chat schema: %w", err)
+	}
+	// Upgrade older databases before the board marker can short-circuit the
+	// seed. Existing events and dated snapshots belong to Daily Routine.
+	if err := ensureWorkspaceColumns(ctx, tx); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO board_meta (id, seeded_at) VALUES (1, ?)", now)
@@ -116,15 +128,96 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	return tx.Commit()
 }
 
+func ensureWorkspaceColumns(ctx context.Context, tx *sql.Tx) error {
+	eventsExist, err := tableExists(ctx, tx, "events")
+	if err != nil {
+		return err
+	}
+	if eventsExist {
+		hasWorkspace, err := tableHasColumn(ctx, tx, "events", "workspace_id")
+		if err != nil {
+			return err
+		}
+		if !hasWorkspace {
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE events ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1"); err != nil {
+				return fmt.Errorf("add events.workspace_id: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE events SET workspace_id = 1 WHERE workspace_id IS NULL OR workspace_id <= 0"); err != nil {
+			return fmt.Errorf("backfill events.workspace_id: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events SET workspace_id = 1
+			WHERE workspace_id NOT IN (SELECT id FROM workspaces)
+		`); err != nil {
+			return fmt.Errorf("repair events.workspace_id: %w", err)
+		}
+	}
+
+	hasWorkspace, err := tableHasColumn(ctx, tx, "event_days", "workspace_id")
+	if err != nil {
+		return err
+	}
+	if !hasWorkspace {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE event_days ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return fmt.Errorf("add event_days.workspace_id: %w", err)
+		}
+		if eventsExist {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE event_days SET workspace_id = COALESCE(
+					(SELECT workspace_id FROM events WHERE events.id = event_days.event_id), 1
+				)
+			`); err != nil {
+				return fmt.Errorf("backfill event_days.workspace_id: %w", err)
+			}
+		}
+	}
+	if eventsExist {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE event_days SET workspace_id = COALESCE(
+				(SELECT workspace_id FROM events WHERE events.id = event_days.event_id), 1
+			) WHERE workspace_id IS NULL OR workspace_id <= 0
+		`); err != nil {
+			return fmt.Errorf("repair event_days.workspace_id: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, "UPDATE event_days SET workspace_id = 1 WHERE workspace_id IS NULL OR workspace_id <= 0"); err != nil {
+		return fmt.Errorf("repair event_days.workspace_id: %w", err)
+	}
+	return nil
+}
+
+func tableExists(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", name,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect table %s: %w", name, err)
+	}
+	return exists, nil
+}
+
+func tableHasColumn(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	var count int
+	query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", table)
+	if err := tx.QueryRowContext(ctx, query, column).Scan(&count); err != nil {
+		return false, fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	return count > 0, nil
+}
+
 func writeDay(ctx context.Context, tx *sql.Tx, event Event, day string, carry bool) error {
 	var through any
 	if !carry || event.Phase == PhaseDone {
 		through = day
 	}
+	workspaceID := event.WorkspaceID
+	if workspaceID == 0 {
+		workspaceID = RoutineWorkspaceID
+	}
 	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO event_days (event_id, day, through_day, `+eventFields+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
 		event.Title, event.Start, event.End, event.Color, event.AllDay, event.Description, event.Result,
-		event.Bold, event.Phase, event.Deadline, event.CreatedAt, event.UpdatedAt)
+		event.Bold, event.Phase, event.Deadline, workspaceID, event.CreatedAt, event.UpdatedAt)
 	return err
 }
 
@@ -238,82 +331,97 @@ func (s *Service) writeEvent(ctx context.Context, fn func(*sql.Tx) (Event, error
 // edits start with the canonical event. Both commit the revision atomically.
 func (s *Service) changeEvent(ctx context.Context, id int64, boardDay string, apply func(*Event)) (*Event, error) {
 	now := s.now()
+	return s.writeEvent(ctx, func(tx *sql.Tx) (Event, error) {
+		var before Event
+		updated, err := changeEventTx(ctx, tx, id, boardDay, now, func(event *Event) {
+			before = *event
+			apply(event)
+		})
+		if err == nil && (boardDay == "" || boardDay >= now.Format(dateLayout)) {
+			err = recordManualChatEdit(ctx, tx, before, updated, now)
+		}
+		return updated, err
+	})
+}
+
+func changeEventTx(ctx context.Context, tx *sql.Tx, id int64, boardDay string, now time.Time, apply func(*Event)) (Event, error) {
 	today := now.Format(dateLayout)
 	if boardDay != "" {
 		var err error
 		boardDay, err = normalizeBoardDay(boardDay)
 		if err != nil {
-			return nil, err
+			return Event{}, err
 		}
 	}
-	return s.writeEvent(ctx, func(tx *sql.Tx) (Event, error) {
-		current, err := eventByID(ctx, tx, id)
+	current, err := eventByID(ctx, tx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	day, before := max(today, scheduleDay(current.Start)), current
+	if boardDay != "" {
+		day = boardDay
+		before, err = boardEvent(ctx, tx, id, day, today)
 		if err != nil {
 			return Event{}, err
 		}
-		day, before := max(today, scheduleDay(current.Start)), current
-		if boardDay != "" {
-			day = boardDay
-			before, err = boardEvent(ctx, tx, id, day, today)
-			if err != nil {
-				return Event{}, err
-			}
-		}
-		updated := before
-		apply(&updated)
-		updated.UpdatedAt = now
+	}
+	updated := before
+	apply(&updated)
+	if updated.WorkspaceID == 0 {
+		updated.WorkspaceID = RoutineWorkspaceID
+	}
+	updated.UpdatedAt = now
 
-		if day < today {
-			later, err := hasLaterRevision(ctx, tx, id, day)
-			if err != nil {
-				return Event{}, err
-			}
-			if later {
-				// A correction to history cannot replace a later decision, or
-				// reopen a gap that was explicitly closed by rescheduling.
-				var through sql.NullString
-				err := tx.QueryRowContext(ctx, `SELECT through_day FROM event_days
-					WHERE event_id = ? AND day <= ? ORDER BY day DESC LIMIT 1`, id, day).Scan(&through)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return Event{}, err
-				}
-				if err := writeDay(ctx, tx, updated, day, true); err != nil {
-					return Event{}, err
-				}
-				if through.Valid && before.Phase != PhaseDone && updated.Phase != PhaseDone {
-					_, err = tx.ExecContext(ctx, "UPDATE event_days SET through_day = ? WHERE event_id = ? AND day = ?", through.String, id, day)
-					return updated, err
-				}
-				return updated, nil
-			}
-		}
-
-		if scheduleDay(before.Start) != scheduleDay(updated.Start) {
-			err = reschedule(ctx, tx, current, updated, now)
-		} else {
-			err = preserveOriginal(ctx, tx, current, day)
-			if err == nil {
-				// Editing an already archived completion in the month calendar
-				// should not introduce a new completed card on today's board.
-				visible := true
-				if boardDay == "" && before.Phase == PhaseDone && updated.Phase == PhaseDone {
-					_, err = boardEvent(ctx, tx, id, day, today)
-					if errors.Is(err, sql.ErrNoRows) {
-						visible, err = false, nil
-					}
-				}
-				if err == nil && visible {
-					err = writeDay(ctx, tx, updated, day, true)
-				}
-			}
-		}
+	if day < today {
+		later, err := hasLaterRevision(ctx, tx, id, day)
 		if err != nil {
 			return Event{}, err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE events SET title=?, start=?, end=?, color=?, all_day=?,
-			description=?, result=?, bold=?, phase=?, deadline=?, updated_at=? WHERE id=?`,
-			updated.Title, updated.Start, updated.End, updated.Color, updated.AllDay, updated.Description,
-			updated.Result, updated.Bold, updated.Phase, updated.Deadline, now, id)
-		return updated, err
-	})
+		if later {
+			// A correction to history cannot replace a later decision, or
+			// reopen a gap that was explicitly closed by rescheduling.
+			var through sql.NullString
+			err := tx.QueryRowContext(ctx, `SELECT through_day FROM event_days
+				WHERE event_id = ? AND day <= ? ORDER BY day DESC LIMIT 1`, id, day).Scan(&through)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return Event{}, err
+			}
+			if err := writeDay(ctx, tx, updated, day, true); err != nil {
+				return Event{}, err
+			}
+			if through.Valid && before.Phase != PhaseDone && updated.Phase != PhaseDone {
+				_, err = tx.ExecContext(ctx, "UPDATE event_days SET through_day = ? WHERE event_id = ? AND day = ?", through.String, id, day)
+				return updated, err
+			}
+			return updated, nil
+		}
+	}
+
+	if scheduleDay(before.Start) != scheduleDay(updated.Start) {
+		err = reschedule(ctx, tx, current, updated, now)
+	} else {
+		err = preserveOriginal(ctx, tx, current, day)
+		if err == nil {
+			// Editing an already archived completion in the month calendar
+			// should not introduce a new completed card on today's board.
+			visible := true
+			if boardDay == "" && before.Phase == PhaseDone && updated.Phase == PhaseDone {
+				_, err = boardEvent(ctx, tx, id, day, today)
+				if errors.Is(err, sql.ErrNoRows) {
+					visible, err = false, nil
+				}
+			}
+			if err == nil && visible {
+				err = writeDay(ctx, tx, updated, day, true)
+			}
+		}
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE events SET title=?, start=?, end=?, color=?, all_day=?,
+		description=?, result=?, bold=?, phase=?, deadline=?, workspace_id=?, updated_at=? WHERE id=?`,
+		updated.Title, updated.Start, updated.End, updated.Color, updated.AllDay, updated.Description,
+		updated.Result, updated.Bold, updated.Phase, updated.Deadline, updated.WorkspaceID, now, id)
+	return updated, err
 }
