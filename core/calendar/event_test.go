@@ -14,13 +14,28 @@ import (
 
 func testService(t *testing.T) *Service {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "calendar.db"))
+	return testServiceAt(t, filepath.Join(t.TempDir(), "calendar.db"))
+}
+
+func testServiceAt(t *testing.T, path string) *Service {
+	t.Helper()
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
+	createEventTestSchema(t, db)
+	if _, err := db.Exec("PRAGMA foreign_keys = ON;" + boardSchema); err != nil {
+		t.Fatalf("create board schema: %v", err)
+	}
+	return NewService(db)
+}
+
+func createEventTestSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
 	if _, err := db.Exec(`
-		CREATE TABLE events (
+		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			title TEXT NOT NULL,
 			start TEXT NOT NULL,
@@ -39,13 +54,12 @@ func testService(t *testing.T) *Service {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
-		CREATE UNIQUE INDEX idx_events_email_source
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_events_email_source
 		ON events(source_account_id, source_message_id, title, start)
 		WHERE source_type = 'email';
 	`); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	return NewService(db)
 }
 
 func eventTestStringPointer(value string) *string {

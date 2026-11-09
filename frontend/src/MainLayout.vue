@@ -31,6 +31,7 @@ const defaultDate = ref('')
 const defaultTitle = ref('')
 const defaultPhase = ref<EventPhase>('todo')
 const modalVariant = ref<'board' | 'calendar'>('calendar')
+const modalBoardDay = ref('')
 const savingEvent = ref(false)
 const initialField = ref<'title' | 'description' | 'result'>('title')
 const board = ref<InstanceType<typeof DailyBoard> | null>(null)
@@ -105,6 +106,7 @@ function openCreateModal(date = defaultCreateDate(), phase: EventPhase = 'todo',
   defaultPhase.value = phase
   initialField.value = 'title'
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
+  modalBoardDay.value = modalVariant.value === 'board' ? date : ''
   showEventModal.value = true
 }
 
@@ -119,6 +121,7 @@ function openEditModal(event: CalendarEvent, focus: 'title' | 'description' | 'r
   defaultTitle.value = ''
   initialField.value = focus
   modalVariant.value = calendarStore.viewMode === 'board' ? 'board' : 'calendar'
+  modalBoardDay.value = modalVariant.value === 'board' ? calendarStore.focusedDate : ''
   showEventModal.value = true
 }
 
@@ -126,12 +129,15 @@ async function handleSave(input: EventInput) {
   if (savingEvent.value) return
   savingEvent.value = true
   const task = modalVariant.value === 'board'
+  const saved: EventInput = task && modalBoardDay.value
+    ? { ...input, boardDay: modalBoardDay.value }
+    : input
   try {
     if (editingEvent.value?.id) {
-      await eventsStore.updateEvent(editingEvent.value.id, input)
+      await eventsStore.updateEvent(editingEvent.value.id, saved)
       message.success(task ? 'Task saved' : 'Changes saved')
     } else {
-      await eventsStore.createEvent(input)
+      await eventsStore.createEvent(saved)
       message.success(task ? 'Task created' : 'Event created')
     }
     showEventModal.value = false
@@ -330,9 +336,7 @@ watch(editingOrDeleting, async open => {
   if (!otherDialogOpen.value && !boardQuickActive.value) board.value?.focusSelection()
 }, { flush: 'post' })
 
-watch(() => calendarStore.currentMonth, () => {
-  eventsStore.fetchEvents()
-})
+watch([() => eventsStore.scope, () => calendarStore.today.getTime()], () => void eventsStore.fetchEvents())
 
 onMounted(() => {
   eventsStore.fetchEvents()
@@ -393,7 +397,12 @@ onUnmounted(() => {
     </transition>
 
     <div class="calendar-area">
-      <div v-if="eventsStore.loading" class="loading-line" role="progressbar" aria-label="Loading events" />
+      <div
+        v-if="eventsStore.loading"
+        class="loading-line"
+        role="progressbar"
+        aria-label="Loading events"
+      />
 
       <transition name="status">
         <div v-if="eventsStore.error" class="error-banner" role="alert">

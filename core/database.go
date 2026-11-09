@@ -1,12 +1,16 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
+
+	"catendar-wails/core/calendar"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -18,6 +22,10 @@ const (
 )
 
 func openDatabase(path string) (*sql.DB, error) {
+	return openDatabaseAt(path, time.Now())
+}
+
+func openDatabaseAt(path string, now time.Time) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -40,6 +48,10 @@ func openDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := migrateEvents(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := calendar.SeedBoard(context.Background(), db, now); err != nil {
 		db.Close()
 		return nil, err
 	}

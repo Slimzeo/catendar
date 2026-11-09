@@ -2,35 +2,52 @@ import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 import type { ShortcutAction } from '@/shortcuts'
 import {
-  DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, isBindableShortcut,
+  DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, defaultPhaseShortcuts, isBindableShortcut,
   normalizeShortcut, shortcutFromKeyboardEvent
 } from '@/shortcuts'
 
-const storageKey = 'catendar-shortcuts-v1'
+const storageKey = 'catendar-shortcuts-v2'
 type Bindings = Record<ShortcutAction, string>
 type BindingResult =
   | { ok: true; chord: string; saved: boolean }
   | { ok: false; reason: 'invalid' }
   | { ok: false; reason: 'conflict'; conflictWith: ShortcutAction }
 
-function loadBindings(): Bindings {
-  const bindings = { ...DEFAULT_SHORTCUTS }
-  try {
-    const raw = localStorage.getItem(storageKey)
-    if (!raw) return bindings
-    const saved: unknown = JSON.parse(raw)
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return bindings
-    for (const action of SHORTCUT_ACTIONS) {
-      const chord = normalizeShortcut((saved as Record<string, unknown>)[action])
-      if (chord && isBindableShortcut(chord, action)) bindings[action] = chord
-    }
-  } catch {
-    return bindings
+function decodeBindings(raw: string, defaults: Bindings): Bindings {
+  const bindings = { ...defaults }
+  const saved: unknown = JSON.parse(raw)
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return bindings
+  for (const action of SHORTCUT_ACTIONS) {
+    const chord = normalizeShortcut((saved as Record<string, unknown>)[action])
+    if (chord && isBindableShortcut(chord, action)) bindings[action] = chord
   }
   // Stored overrides may refer to a default that another action now uses.
   return new Set(Object.values(bindings)).size === SHORTCUT_ACTIONS.length
     ? bindings
-    : { ...DEFAULT_SHORTCUTS }
+    : { ...defaults }
+}
+
+function loadBindings(): Bindings {
+  try {
+    const current = localStorage.getItem(storageKey)
+    if (current !== null) return decodeBindings(current, DEFAULT_SHORTCUTS)
+    const legacy = localStorage.getItem('catendar-shortcuts-v1')
+    if (legacy !== null) {
+      const oldDefaults = { ...DEFAULT_SHORTCUTS, ...defaultPhaseShortcuts(false) }
+      const bindings = decodeBindings(legacy, oldDefaults)
+      for (const action of ['phaseLeft', 'phaseRight'] as const) {
+        const next = DEFAULT_SHORTCUTS[action]
+        if (bindings[action] === oldDefaults[action] && !Object.values(bindings).includes(next)) {
+          bindings[action] = next
+        }
+      }
+      persist(bindings)
+      return bindings
+    }
+  } catch {
+    // Ignore damaged or unavailable preferences.
+  }
+  return { ...DEFAULT_SHORTCUTS }
 }
 
 function persist(bindings: Bindings): boolean {

@@ -204,6 +204,7 @@ export namespace calendar {
 	    bold: boolean;
 	    phase?: string;
 	    deadline?: string;
+	    boardDay?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new EventInput(source);
@@ -221,6 +222,7 @@ export namespace calendar {
 	        this.bold = source["bold"];
 	        this.phase = source["phase"];
 	        this.deadline = source["deadline"];
+	        this.boardDay = source["boardDay"];
 	    }
 	}
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testing.T) {
@@ -119,6 +120,147 @@ func TestOpenDatabaseMigratesLegacyEventTableBeforeCreatingSourceIndex(t *testin
 	}
 	if eventCount != 1 {
 		t.Fatalf("event count after reopen = %d, want 1", eventCount)
+	}
+}
+
+func TestOpenDatabaseSeedsBoardDaysForRecentWorkOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "calendar.db")
+	legacy, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			start TEXT NOT NULL,
+			end TEXT,
+			color TEXT NOT NULL,
+			all_day INTEGER NOT NULL DEFAULT 1,
+			description TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			bold INTEGER NOT NULL DEFAULT 0,
+			phase TEXT NOT NULL DEFAULT 'todo',
+			deadline TEXT NOT NULL DEFAULT '',
+			source_type TEXT NOT NULL DEFAULT '',
+			source_account_id TEXT NOT NULL DEFAULT '',
+			source_message_id TEXT NOT NULL DEFAULT '',
+			source_url TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`); err != nil {
+		legacy.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	insert := func(title, start, phase, updatedAt string) int64 {
+		t.Helper()
+		result, err := legacy.Exec(`
+			INSERT INTO events (title, start, end, color, all_day, phase, created_at, updated_at)
+			VALUES (?, ?, ?, '#7663b5', 1, ?, ?, ?)
+		`, title, start, start, phase, updatedAt, updatedAt)
+		if err != nil {
+			legacy.Close()
+			t.Fatalf("insert %s: %v", title, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			legacy.Close()
+			t.Fatalf("read %s id: %v", title, err)
+		}
+		return id
+	}
+	yTodo := insert("Yesterday todo", "2026-03-01T00:00:00", "todo", "2026-03-01 00:30:00")
+	yProgress := insert("Yesterday progress", "2026-03-01T00:00:00", "progressing", "2026-03-01 00:30:00")
+	yDone := insert("Yesterday done", "2026-03-01T00:00:00", "done", "2026-03-01 00:30:00")
+	oldWorked := insert("Older worked", "2026-01-10T00:00:00", "todo", "2026-02-28 23:00:00")
+	oldUntouched := insert("Older untouched", "2026-01-10T00:00:00", "todo", "2026-01-10 00:00:00")
+	future := insert("Future", "2026-03-03T00:00:00", "todo", "2026-03-01 00:30:00")
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	now := time.Date(2026, time.March, 2, 9, 30, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	db, err := openDatabaseAt(path, now)
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	for id, wantDay := range map[int64]string{
+		yTodo:     "2026-03-01",
+		yProgress: "2026-03-01",
+		yDone:     "2026-03-01",
+		oldWorked: "2026-03-01",
+		future:    "2026-03-03",
+	} {
+		var day string
+		if err := db.QueryRow(`SELECT day FROM event_days WHERE event_id = ?`, id).Scan(&day); err != nil {
+			db.Close()
+			t.Fatalf("read seeded day for %d: %v", id, err)
+		}
+		if day != wantDay {
+			db.Close()
+			t.Fatalf("seeded day for %d = %q, want %q", id, day, wantDay)
+		}
+	}
+	var untouchedCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM event_days WHERE event_id = ?`, oldUntouched).Scan(&untouchedCount); err != nil {
+		db.Close()
+		t.Fatalf("count untouched history: %v", err)
+	}
+	if untouchedCount != 0 {
+		db.Close()
+		t.Fatalf("untouched history was enrolled %d times", untouchedCount)
+	}
+	var seededAt sql.NullString
+	if err := db.QueryRow(`SELECT seeded_at FROM board_meta WHERE id = 1`).Scan(&seededAt); err != nil {
+		db.Close()
+		t.Fatalf("read board seed marker: %v", err)
+	}
+	if !seededAt.Valid {
+		db.Close()
+		t.Fatal("board seed marker was not recorded")
+	}
+	var rowCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM event_days`).Scan(&rowCount); err != nil {
+		db.Close()
+		t.Fatalf("count seeded days: %v", err)
+	}
+	if rowCount != 5 {
+		db.Close()
+		t.Fatalf("seeded day count = %d, want 5", rowCount)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migrated database: %v", err)
+	}
+
+	reopened, err := openDatabaseAt(path, now.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatalf("reopen migrated database: %v", err)
+	}
+	defer reopened.Close()
+	var reopenedCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM event_days`).Scan(&reopenedCount); err != nil {
+		t.Fatalf("count reopened days: %v", err)
+	}
+	if reopenedCount != rowCount {
+		t.Fatalf("no-change relaunch added board rows: before=%d after=%d", rowCount, reopenedCount)
+	}
+	var phase string
+	if err := reopened.QueryRow(`SELECT phase FROM event_days WHERE event_id = ? AND day = ?`, yTodo, "2026-03-01").Scan(&phase); err != nil {
+		t.Fatalf("read reopened phase: %v", err)
+	}
+	if phase != "todo" {
+		t.Fatalf("no-change relaunch rewrote yesterday's phase to %q", phase)
+	}
+	if _, err := reopened.Exec(`DELETE FROM events WHERE id = ?`, yTodo); err != nil {
+		t.Fatalf("delete seeded event: %v", err)
+	}
+	var cascaded int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM event_days WHERE event_id = ?`, yTodo).Scan(&cascaded); err != nil {
+		t.Fatalf("count deleted board rows: %v", err)
+	}
+	if cascaded != 0 {
+		t.Fatalf("event deletion left %d board rows", cascaded)
 	}
 }
 

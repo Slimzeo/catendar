@@ -10,6 +10,7 @@ const storage = {
   setItem: (key, value) => saved.set(key, value)
 }
 const storageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
 
 before(async () => {
   server = await createServer({
@@ -17,6 +18,7 @@ before(async () => {
     optimizeDeps: { noDiscovery: true },
     logLevel: 'silent'
   })
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform: 'MacIntel' } })
   keys = await server.ssrLoadModule('/src/shortcuts.ts')
   const stores = await server.ssrLoadModule('/src/stores/shortcuts.ts')
   useShortcutsStore = stores.useShortcutsStore
@@ -30,19 +32,43 @@ after(async () => {
   await server?.close()
   if (storageDescriptor) Object.defineProperty(globalThis, 'localStorage', storageDescriptor)
   else delete globalThis.localStorage
+  if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor)
+  else delete globalThis.navigator
 })
 
-test('plain arrows, held Tab and Control dispatch three distinct commands', () => {
+test('Mac uses Option for phases, leaving Control arrows available to Spaces', () => {
   const shortcuts = useShortcutsStore()
   const right = { key: 'ArrowRight', code: 'ArrowRight' }
   assert.equal(shortcuts.match(right), 'nextDate')
   assert.equal(shortcuts.match(right, true), 'columnRight')
-  assert.equal(shortcuts.match({ ...right, ctrlKey: true }), 'phaseRight')
-  assert.equal(shortcuts.match({ ...right, ctrlKey: true }, true), undefined)
+  assert.equal(shortcuts.match({ ...right, altKey: true }), 'phaseRight')
+  assert.equal(shortcuts.match({ key: 'ArrowLeft', altKey: true }), 'phaseLeft')
+  assert.equal(shortcuts.match({ ...right, ctrlKey: true }), undefined)
+  assert.equal(shortcuts.match({ ...right, altKey: true }, true), undefined)
+  assert.equal(keys.formatShortcut(shortcuts.bindings.phaseRight), 'Option + →')
+  assert.deepEqual(keys.defaultPhaseShortcuts(false), {phaseLeft: 'Ctrl+ArrowLeft', phaseRight: 'Ctrl+ArrowRight'})
   assert.equal(shortcuts.match({ key: 'd' }), 'deleteTask')
   assert.equal(shortcuts.match({ key: 'd', ctrlKey: true }), 'confirmDelete')
   assert.equal(shortcuts.match({ key: 'd', isComposing: true }), undefined)
   assert.equal(shortcuts.match({ key: '0' }), 'task10')
+})
+
+test('upgrade changes only the old phase defaults and respects occupied keys', () => {
+  saved.set('catendar-shortcuts-v1', JSON.stringify({
+    phaseRight: 'Ctrl+ArrowRight', phaseLeft: 'Ctrl+ArrowLeft', columnLeft: 'Alt+ArrowLeft', quickAdd: 'Q'
+  }))
+  const shortcuts = useShortcutsStore()
+  assert.equal(shortcuts.bindings.phaseRight, 'Alt+ArrowRight')
+  assert.equal(shortcuts.bindings.phaseLeft, 'Ctrl+ArrowLeft')
+  assert.equal(shortcuts.bindings.columnLeft, 'Alt+ArrowLeft')
+  assert.equal(shortcuts.bindings.quickAdd, 'Q')
+  assert.equal(shortcuts.setBinding('phaseRight', 'Ctrl+ArrowRight').ok, true)
+  setActivePinia(createPinia())
+  assert.equal(useShortcutsStore().bindings.phaseRight, 'Ctrl+ArrowRight')
+  saved.clear()
+  saved.set('catendar-shortcuts-v1', JSON.stringify({ phaseRight: 'F6' }))
+  setActivePinia(createPinia())
+  assert.equal(useShortcutsStore().bindings.phaseRight, 'F6')
 })
 
 test('recording and dispatch agree for punctuation and Mac Option keys', () => {
@@ -87,6 +113,7 @@ test('remaps survive a fresh store, disable the old key and reset together', () 
 
 test('invalid saved data leaves a usable, unambiguous keymap', () => {
   for (const bad of ['{', 'null', '{"quickAdd":"D"}']) {
+    saved.clear()
     saved.set('catendar-shortcuts-v1', bad)
     setActivePinia(createPinia())
     assert.deepEqual({ ...useShortcutsStore().bindings }, keys.DEFAULT_SHORTCUTS)

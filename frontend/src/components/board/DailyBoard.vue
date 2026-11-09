@@ -25,7 +25,7 @@ const themeStore = useThemeStore()
 const message = useMessage()
 
 const selectedDate = computed(() => calendarStore.focusedDate)
-const dayEvents = computed(() => eventsStore.eventsByDate[selectedDate.value] || [])
+const dayEvents = computed(() => eventsStore.boardEventsForDay(selectedDate.value))
 
 const columns = computed(() => eventPhases.map(phase => ({
   phase,
@@ -207,7 +207,8 @@ async function submitQuick() {
       description: '',
       bold: false,
       phase,
-      deadline: ''
+      deadline: '',
+      boardDay: createDate
     }
     const created = await eventsStore.createEvent(input)
     if (selectedDate.value === createDate) {
@@ -284,8 +285,9 @@ function choosePhase(calendarEvent: CalendarEvent, phase: EventPhase) {
 }
 
 async function moveEvent(calendarEvent: CalendarEvent, phase: EventPhase) {
+  const day = selectedDate.value
   try {
-    await eventsStore.setEventPhase(calendarEvent.id, phase)
+    await eventsStore.setEventPhase(calendarEvent.id, phase, day)
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Could not move the task'
     message.error(detail)
@@ -517,7 +519,7 @@ async function moveSelectedPhase(direction: -1 | 1) {
   phaseMoveId.value = moveId
   activePhase.value = phase
   selectedId.value = moveId
-  const move = eventsStore.setEventPhase(moveId, phase)
+  const move = eventsStore.setEventPhase(moveId, phase, moveDate)
   void focusSelection()
 
   try {

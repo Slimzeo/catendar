@@ -50,6 +50,7 @@ type EventInput struct {
 	Bold        bool    `json:"bold"`
 	Phase       string  `json:"phase,omitempty"`
 	Deadline    *string `json:"deadline,omitempty"`
+	BoardDay    string  `json:"boardDay,omitempty"`
 }
 
 type EmailEventInput struct {
@@ -79,16 +80,17 @@ type BatchResult struct {
 }
 
 type Service struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+	return &Service{db: db, now: time.Now}
 }
 
 func (s *Service) GetEventsByDateRange(ctx context.Context, start, end string) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
+		SELECT id, `+eventFields+`
 		FROM events
 		WHERE start >= ? AND start < date(?, '+1 day')
 		ORDER BY start ASC
@@ -96,8 +98,11 @@ func (s *Service) GetEventsByDateRange(ctx context.Context, start, end string) (
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
 	}
-	defer rows.Close()
+	return collectEvents(rows)
+}
 
+func collectEvents(rows *sql.Rows) ([]Event, error) {
+	defer rows.Close()
 	events := make([]Event, 0)
 	for rows.Next() {
 		event, err := scanEvent(rows)
@@ -113,27 +118,33 @@ func (s *Service) GetEventsByDateRange(ctx context.Context, start, end string) (
 }
 
 func (s *Service) CreateEvent(ctx context.Context, input EventInput) (*Event, error) {
-	input, err := normalizeCreateInput(input)
+	now := s.now()
+	input, err := normalizeCreateInput(input, now)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (
-			title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
-		)
-		VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?, COALESCE(?, ''), ?, ?)
-	`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
-		trimResult(input.Result), boolToInt(input.Bold), input.Phase, input.Deadline, now, now)
-	if err != nil {
-		return nil, fmt.Errorf("create event: %w", err)
-	}
+	return s.writeEvent(ctx, func(tx *sql.Tx) (Event, error) {
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO events (
+				title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?, ?, COALESCE(?, ''), ?, ?)
+		`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
+			trimResult(input.Result), boolToInt(input.Bold), input.Phase, input.Deadline, now, now)
+		if err != nil {
+			return Event{}, fmt.Errorf("create event: %w", err)
+		}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("read created event id: %w", err)
-	}
-	return s.getEventByID(ctx, id)
+		id, err := result.LastInsertId()
+		if err != nil {
+			return Event{}, fmt.Errorf("read created event id: %w", err)
+		}
+		event, err := eventByID(ctx, tx, id)
+		if err != nil {
+			return Event{}, err
+		}
+		return event, enrollEvent(ctx, tx, event, now)
+	})
 }
 
 func (s *Service) UpdateEvent(ctx context.Context, id int64, input EventInput) (*Event, error) {
@@ -153,40 +164,39 @@ func (s *Service) UpdateEvent(ctx context.Context, id int64, input EventInput) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE events
-		SET title = ?, start = ?, end = ?, color = ?, all_day = ?, description = ?, result = COALESCE(?, result),
-			bold = ?, phase = COALESCE(NULLIF(?, ''), phase), deadline = COALESCE(?, deadline),
-			updated_at = ?
-		WHERE id = ?
-	`, input.Title, input.Start, input.End, input.Color, boolToInt(input.AllDay), input.Description,
-		trimResult(input.Result), boolToInt(input.Bold), phase, deadline, time.Now(), id)
-	if err != nil {
-		return nil, fmt.Errorf("update event: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return nil, sql.ErrNoRows
-	}
-	return s.getEventByID(ctx, id)
+	return s.changeEvent(ctx, id, input.BoardDay, func(event *Event) {
+		event.Title, event.Start, event.End = input.Title, input.Start, input.End
+		event.Color, event.AllDay, event.Bold = input.Color, input.AllDay, input.Bold
+		event.Description = input.Description
+		if input.Result != nil {
+			event.Result = strings.TrimSpace(*input.Result)
+		}
+		if deadline != nil {
+			event.Deadline = *deadline
+		}
+		if phase != "" {
+			event.Phase = phase
+		}
+	})
 }
 
 func (s *Service) SetEventPhase(ctx context.Context, id int64, phase string) (*Event, error) {
+	return s.setPhase(ctx, id, phase, "")
+}
+
+func (s *Service) SetBoardEventPhase(ctx context.Context, id int64, phase, day string) (*Event, error) {
+	if day == "" {
+		return nil, errors.New("board day is required")
+	}
+	return s.setPhase(ctx, id, phase, day)
+}
+
+func (s *Service) setPhase(ctx context.Context, id int64, phase, day string) (*Event, error) {
 	phase, err := validatePhase(phase)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE events
-		SET phase = ?, updated_at = ?
-		WHERE id = ?
-	`, phase, time.Now(), id)
-	if err != nil {
-		return nil, fmt.Errorf("update event phase: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return nil, sql.ErrNoRows
-	}
-	return s.getEventByID(ctx, id)
+	return s.changeEvent(ctx, id, day, func(event *Event) { event.Phase = phase })
 }
 
 func (s *Service) DeleteEvent(ctx context.Context, id int64) error {
@@ -241,7 +251,7 @@ func (s *Service) BatchCreateFromEmail(
 			result.Conflicts++
 		}
 
-		now := time.Now()
+		now := s.now()
 		insert, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO events (
 				title, start, end, color, all_day, description, bold, phase, deadline,
@@ -260,6 +270,17 @@ func (s *Service) BatchCreateFromEmail(
 		if affected == 0 {
 			result.Skipped++
 		} else {
+			id, err := insert.LastInsertId()
+			if err != nil {
+				return result, err
+			}
+			created, err := eventByID(ctx, tx, id)
+			if err != nil {
+				return result, err
+			}
+			if err := enrollEvent(ctx, tx, created, now); err != nil {
+				return result, err
+			}
 			result.Created++
 		}
 	}
@@ -270,16 +291,12 @@ func (s *Service) BatchCreateFromEmail(
 	return result, nil
 }
 
-func (s *Service) getEventByID(ctx context.Context, id int64) (*Event, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, title, start, end, color, all_day, description, result, bold, phase, deadline, created_at, updated_at
-		FROM events WHERE id = ?
-	`, id)
-	event, err := scanEvent(row)
-	if err != nil {
-		return nil, err
-	}
-	return &event, nil
+type eventReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func eventByID(ctx context.Context, db eventReader, id int64) (Event, error) {
+	return scanEvent(db.QueryRowContext(ctx, "SELECT id, "+eventFields+" FROM events WHERE id = ?", id))
 }
 
 type rowScanner interface {
@@ -290,14 +307,16 @@ func scanEvent(row rowScanner) (Event, error) {
 	var event Event
 	var allDay, bold int
 	var end, description, result, deadline sql.NullString
+	var createdAt, updatedAt sql.NullTime
 	if err := row.Scan(
 		&event.ID, &event.Title, &event.Start, &end, &event.Color,
-		&allDay, &description, &result, &bold, &event.Phase, &deadline, &event.CreatedAt, &event.UpdatedAt,
+		&allDay, &description, &result, &bold, &event.Phase, &deadline, &createdAt, &updatedAt,
 	); err != nil {
 		return Event{}, fmt.Errorf("scan event: %w", err)
 	}
 	event.AllDay = allDay == 1
 	event.Bold = bold == 1
+	event.CreatedAt, event.UpdatedAt = createdAt.Time, updatedAt.Time
 	if end.Valid {
 		event.End = end.String
 	}
@@ -313,7 +332,12 @@ func scanEvent(row rowScanner) (Event, error) {
 	return event, nil
 }
 
-func normalizeCreateInput(input EventInput) (EventInput, error) {
+func normalizeCreateInput(input EventInput, now time.Time) (EventInput, error) {
+	if input.BoardDay != "" {
+		if _, err := normalizeBoardDay(input.BoardDay); err != nil {
+			return EventInput{}, err
+		}
+	}
 	input.Title = strings.TrimSpace(input.Title)
 	if input.Title == "" {
 		return EventInput{}, errors.New("title is required")
@@ -332,7 +356,7 @@ func normalizeCreateInput(input EventInput) (EventInput, error) {
 	input.Deadline = deadline
 
 	if strings.TrimSpace(input.Start) == "" {
-		input.Start = time.Now().Format(dateLayout) + "T00:00:00"
+		input.Start = now.Format(dateLayout) + "T00:00:00"
 		if strings.TrimSpace(input.End) == "" {
 			input.End = input.Start
 		}

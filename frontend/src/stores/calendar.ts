@@ -122,6 +122,7 @@ export const useCalendarStore = defineStore('calendar', () => {
 
   return {
     currentDate,
+    today,
     viewMode,
     currentMonth,
     monthLabel,
