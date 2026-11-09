@@ -1,5 +1,12 @@
 export type EventPhase = 'todo' | 'progressing' | 'done'
 
+export interface EventRegistration {
+  name: string
+  url?: string
+  deadline?: string
+  deadlineText?: string
+}
+
 export interface CalendarEvent {
   id: number
   title: string
@@ -12,6 +19,7 @@ export interface CalendarEvent {
   bold: boolean
   phase: EventPhase
   deadline?: string
+  registrations?: EventRegistration[]
   createdAt: string
   updatedAt: string
 }
@@ -143,6 +151,7 @@ export interface ChatChange {
   phase: EventPhase
   description: string
   result: string
+  registrations?: EventRegistration[]
   needsReview: boolean
   baseUpdated: string
 }

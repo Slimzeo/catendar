@@ -28,14 +28,15 @@ const (
 // messages. It can inform updates to existing cards but must not be cited as
 // evidence for a new card.
 type Message struct {
-	ID          string `json:"id"`
-	ThreadID    string `json:"threadId"`
-	ThreadTitle string `json:"threadTitle"`
-	Project     string `json:"project"`
-	Role        string `json:"role"`
-	Text        string `json:"text"`
-	ContextOnly bool   `json:"contextOnly,omitempty"`
-	At          int64  `json:"at"`
+	ID               string `json:"id"`
+	ThreadID         string `json:"threadId"`
+	ThreadTitle      string `json:"threadTitle"`
+	Project          string `json:"project"`
+	Role             string `json:"role"`
+	Text             string `json:"text"`
+	ContextOnly      bool   `json:"contextOnly,omitempty"`
+	RegistrationOnly bool   `json:"-"` // Manual upgrade pass: attach evidence to existing cards only.
+	At               int64  `json:"at"`
 }
 
 // injectedTextBlocks are client-side envelopes and UI metadata that the CLIs

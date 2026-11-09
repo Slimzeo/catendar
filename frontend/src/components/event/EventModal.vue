@@ -5,6 +5,7 @@ import { NButton, NCard, NDatePicker, NInput, NModal, NSelect, NSwitch } from 'n
 import type { CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases } from '@/constants/eventPhases'
 import ColorPalettePicker from './ColorPalettePicker.vue'
+import EventRegistrations from './EventRegistrations.vue'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -56,6 +57,7 @@ const phaseOptions = eventPhases.map(value => ({ label: value, value }))
 
 const isEditing = computed(() => Boolean(props.event?.id))
 const isTask = computed(() => props.variant === 'board')
+const registrations = computed(() => props.event?.registrations ?? [])
 const modalTitle = computed(() => {
   if (isTask.value) return isEditing.value ? 'Edit task' : 'New task'
   return isEditing.value ? 'Edit event' : 'New event'
@@ -281,9 +283,16 @@ function handleSave() {
           <div class="result-readonly">{{ result }}</div>
         </div>
 
+        <div v-if="isEditing && registrations.length" class="form-group registrations-field">
+          <label>Registrations <span class="optional">{{ registrations.length }}</span></label>
+          <div class="registrations-box">
+            <event-registrations :registrations="registrations" :context="title" />
+          </div>
+        </div>
+
         <div class="form-row phase-row">
           <div class="form-group deadline-field">
-            <label for="event-deadline">Deadline <span class="optional">Optional</span></label>
+            <label for="event-deadline">{{ registrations.length ? 'Task deadline' : 'Deadline' }} <span class="optional">Optional</span></label>
             <div class="deadline-control">
               <input
                 id="event-deadline"
@@ -613,6 +622,18 @@ function handleSave() {
 
 .description-field {
   margin-bottom: 17px;
+}
+
+.registrations-field {
+  margin-bottom: 17px;
+}
+
+.registrations-box {
+  --registration-font-size: 12px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-secondary);
 }
 
 .result-readonly {

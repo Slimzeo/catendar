@@ -11,6 +11,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useSyncSourcesStore } from '@/stores/syncSources'
 import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
+import EventRegistrations from '@/components/event/EventRegistrations.vue'
 
 const emit = defineEmits<{
   (event: 'edit', calendarEvent: CalendarEvent, focus?: 'title' | 'description' | 'result'): void
@@ -334,7 +335,7 @@ function eventTime(event: CalendarEvent): string {
 function deadlineLabel(deadline: string): string {
   const date = parseISO(deadline)
   if (Number.isNaN(date.getTime())) return deadline
-  return `Due ${format(date, 'MMM d')}`
+  return format(date, 'MMM d')
 }
 
 function isOverdue(event: CalendarEvent): boolean {
@@ -362,6 +363,10 @@ function openMail(event: CalendarEvent) {
 
 function hasMeta(event: CalendarEvent): boolean {
   return Boolean((themeStore.showTime && eventTime(event)) || event.deadline || mailUrl(event))
+}
+
+function hasRegistrations(event: CalendarEvent): boolean {
+  return Boolean(event.registrations?.length)
 }
 
 function eventsForPhase(phase: EventPhase): CalendarEvent[] {
@@ -659,7 +664,7 @@ defineExpose({
           :class="{
             done: calendarEvent.phase === 'done',
             dragging: draggingId === calendarEvent.id,
-            'no-meta': !hasMeta(calendarEvent)
+            'no-meta': !hasMeta(calendarEvent) && !hasRegistrations(calendarEvent)
           }"
           :style="{ '--event-color': calendarEvent.color }"
           :data-task-id="calendarEvent.id"
@@ -682,6 +687,13 @@ defineExpose({
             :text="cardDescription(calendarEvent)"
             :clamp="2"
             @open-email="sourceURL => emit('open-email', sourceURL)"
+          />
+          <event-registrations
+            v-if="hasRegistrations(calendarEvent)"
+            class="card-registrations"
+            :registrations="calendarEvent.registrations"
+            :context="calendarEvent.title"
+            compact
           />
           <button
             v-if="calendarEvent.phase === 'progressing'"
@@ -708,7 +720,7 @@ defineExpose({
                 <svg viewBox="0 0 20 20" aria-hidden="true">
                   <path d="M5 17V3.5h9l-1.8 3.2L14 10H5" />
                 </svg>
-                {{ deadlineLabel(calendarEvent.deadline) }}
+                {{ hasRegistrations(calendarEvent) ? 'Task due' : 'Due' }} {{ deadlineLabel(calendarEvent.deadline) }}
               </span>
               <button
                 v-if="mailUrl(calendarEvent)"
@@ -1019,6 +1031,11 @@ defineExpose({
   margin-top: 2px;
   font-size: 12.5px;
   -webkit-line-clamp: 2;
+}
+
+.card-registrations {
+  --registration-font-size: 11px;
+  margin-top: 4px;
 }
 
 .card-result {

@@ -24,20 +24,21 @@ const (
 var colorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 type Event struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Start       string    `json:"start"`
-	End         string    `json:"end,omitempty"`
-	Color       string    `json:"color"`
-	AllDay      bool      `json:"allDay"`
-	Description string    `json:"description"`
-	Result      string    `json:"result,omitempty"`
-	Bold        bool      `json:"bold"`
-	Phase       string    `json:"phase"`
-	Deadline    string    `json:"deadline,omitempty"`
-	SummaryKey  string    `json:"-"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID            int64          `json:"id"`
+	Title         string         `json:"title"`
+	Start         string         `json:"start"`
+	End           string         `json:"end,omitempty"`
+	Color         string         `json:"color"`
+	AllDay        bool           `json:"allDay"`
+	Description   string         `json:"description"`
+	Result        string         `json:"result,omitempty"`
+	Bold          bool           `json:"bold"`
+	Phase         string         `json:"phase"`
+	Deadline      string         `json:"deadline,omitempty"`
+	Registrations []Registration `json:"registrations,omitempty"`
+	SummaryKey    string         `json:"-"`
+	CreatedAt     time.Time      `json:"createdAt"`
+	UpdatedAt     time.Time      `json:"updatedAt"`
 }
 
 type EventInput struct {
@@ -317,12 +318,12 @@ type rowScanner interface {
 func scanEvent(row rowScanner, extra ...any) (Event, error) {
 	var event Event
 	var allDay, bold int
-	var end, description, result, deadline sql.NullString
+	var end, description, result, deadline, registrations sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	fields := []any{
 		&event.ID, &event.Title, &event.Start, &end, &event.Color,
 		&allDay, &description, &result, &bold, &event.Phase, &deadline,
-		&createdAt, &updatedAt,
+		&registrations, &createdAt, &updatedAt,
 	}
 	if err := row.Scan(append(fields, extra...)...); err != nil {
 		return Event{}, fmt.Errorf("scan event: %w", err)
@@ -341,6 +342,13 @@ func scanEvent(row rowScanner, extra ...any) (Event, error) {
 	}
 	if deadline.Valid {
 		event.Deadline = deadline.String
+	}
+	if registrations.Valid {
+		decoded, err := decodeRegistrations(registrations.String)
+		if err != nil {
+			return Event{}, err
+		}
+		event.Registrations = decoded
 	}
 	return event, nil
 }

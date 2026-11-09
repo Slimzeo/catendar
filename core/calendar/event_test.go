@@ -47,6 +47,7 @@ func createEventTestSchema(t *testing.T, db *sql.DB) {
 			bold INTEGER NOT NULL DEFAULT 0,
 			phase TEXT NOT NULL DEFAULT 'todo',
 			deadline TEXT NOT NULL DEFAULT '',
+			registrations TEXT NOT NULL DEFAULT '[]',
 			source_type TEXT NOT NULL DEFAULT '',
 			source_account_id TEXT NOT NULL DEFAULT '',
 			source_message_id TEXT NOT NULL DEFAULT '',

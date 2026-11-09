@@ -18,6 +18,7 @@ const boardSchema = `
 		title TEXT NOT NULL, start TEXT NOT NULL, end TEXT, color TEXT NOT NULL,
 		all_day INTEGER NOT NULL, description TEXT NOT NULL, result TEXT NOT NULL,
 		bold INTEGER NOT NULL, phase TEXT NOT NULL, deadline TEXT NOT NULL,
+		registrations TEXT NOT NULL DEFAULT '[]',
 		created_at DATETIME, updated_at DATETIME,
 		PRIMARY KEY (event_id, day)
 	);
@@ -33,7 +34,30 @@ const boardSchema = `
 `
 
 const eventFields = `title, start, end, color, all_day, description, result,
-	bold, phase, deadline, created_at, updated_at`
+	bold, phase, deadline, registrations, created_at, updated_at`
+
+// ensureRegistrationColumns upgrades databases created before action details
+// existed. It runs before seeding so newly written board rows already carry the
+// column.
+func ensureRegistrationColumns(ctx context.Context, tx *sql.Tx) error {
+	for _, table := range []string{"events", "event_days", "chat_activities"} {
+		var count int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM pragma_table_info('"+table+"') WHERE name = 'registrations'",
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect %s.registrations: %w", table, err)
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			"ALTER TABLE "+table+" ADD COLUMN registrations TEXT NOT NULL DEFAULT '[]'",
+		); err != nil {
+			return fmt.Errorf("add %s.registrations: %w", table, err)
+		}
+	}
+	return nil
+}
 
 // Scheduled dates use the same wall date as the month calendar. Audit
 // timestamps, in contrast, are instants and must be converted to local time.
@@ -70,6 +94,9 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	}
 	if _, err := tx.ExecContext(ctx, chatSchema); err != nil {
 		return fmt.Errorf("create chat schema: %w", err)
+	}
+	if err := ensureRegistrationColumns(ctx, tx); err != nil {
+		return err
 	}
 	result, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO board_meta (id, seeded_at) VALUES (1, ?)", now)
 	if err != nil {
@@ -130,10 +157,14 @@ func writeDay(ctx context.Context, tx *sql.Tx, event Event, day string, carry bo
 	if !carry || event.Phase == PhaseDone {
 		through = day
 	}
-	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO event_days (event_id, day, through_day, `+eventFields+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
+	registrations, err := encodeRegistrations(event.Registrations)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO event_days (event_id, day, through_day, `+eventFields+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, day, through,
 		event.Title, event.Start, event.End, event.Color, event.AllDay, event.Description, event.Result,
-		event.Bold, event.Phase, event.Deadline, event.CreatedAt, event.UpdatedAt)
+		event.Bold, event.Phase, event.Deadline, registrations, event.CreatedAt, event.UpdatedAt)
 	return err
 }
 
@@ -338,9 +369,13 @@ func changeEventTx(ctx context.Context, tx *sql.Tx, id int64, boardDay string, n
 	if err != nil {
 		return Event{}, err
 	}
+	registrations, err := encodeRegistrations(updated.Registrations)
+	if err != nil {
+		return Event{}, err
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE events SET title=?, start=?, end=?, color=?, all_day=?,
-		description=?, result=?, bold=?, phase=?, deadline=?, updated_at=? WHERE id=?`,
+		description=?, result=?, bold=?, phase=?, deadline=?, registrations=?, updated_at=? WHERE id=?`,
 		updated.Title, updated.Start, updated.End, updated.Color, updated.AllDay, updated.Description,
-		updated.Result, updated.Bold, updated.Phase, updated.Deadline, now, id)
+		updated.Result, updated.Bold, updated.Phase, updated.Deadline, registrations, now, id)
 	return updated, err
 }
