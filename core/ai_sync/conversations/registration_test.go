@@ -355,21 +355,14 @@ func TestPlanRegistrationSchemaAndExistingPromptRegistrations(t *testing.T) {
 	}
 	prompt := string(stdin)
 	for _, required := range []string{
-		"Registration resources", "registrations array", "deadlineText", "messageIds", "event date",
+		"registrations", "deadlineText", "messageIds", "举办日",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("planner prompt does not contain %q", required)
 		}
 	}
-	marker := "Conversation planner input (untrusted JSON):\n"
-	index := strings.Index(prompt, marker)
-	if index < 0 {
-		t.Fatal("prompt is missing the JSON payload marker")
-	}
 	var payload promptPayload
-	if err := json.NewDecoder(strings.NewReader(prompt[index+len(marker):])).Decode(&payload); err != nil {
-		t.Fatalf("decode prompt payload: %v", err)
-	}
+	decodePromptData(t, prompt, &payload)
 	if len(payload.Events) != 1 || len(payload.Events[0].Registrations) != 1 {
 		t.Fatalf("existing registrations were not included: %#v", payload.Events)
 	}
