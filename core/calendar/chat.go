@@ -216,7 +216,10 @@ func (s *Service) ApplyChatPlan(
 			continue
 		}
 		batchKey := change.Source.ThreadID + "\x00" + change.TaskKey
-		if batchKeys[batchKey] {
+		// Several messages in one survey can contribute different activities
+		// to the same existing card. Keep their evidence in this transaction.
+		detailsOnly := change.EventID > 0 && len(change.Registrations) > 0 && change.Phase == "" && change.Description == "" && change.Result == ""
+		if batchKeys[batchKey] && !detailsOnly {
 			counts.Skipped++
 			continue
 		}

@@ -35,7 +35,7 @@ type Message struct {
 	Role             string `json:"role"`
 	Text             string `json:"text"`
 	ContextOnly      bool   `json:"contextOnly,omitempty"`
-	RegistrationOnly bool   `json:"-"` // Manual upgrade pass: attach evidence to existing cards only.
+	RegistrationOnly bool   `json:"-"` // Manual upgrade pass for registration details; do not replay ordinary task changes.
 	At               int64  `json:"at"`
 }
 

@@ -1,10 +1,14 @@
 export type EventPhase = 'todo' | 'progressing' | 'done'
 
+export type EventEditField = 'title' | 'description' | 'result' | 'registrations'
+
 export interface EventRegistration {
   name: string
   url?: string
   deadline?: string
   deadlineText?: string
+  submissionDeadline?: string
+  submissionDeadlineText?: string
 }
 
 export interface CalendarEvent {

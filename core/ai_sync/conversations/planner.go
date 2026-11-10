@@ -87,16 +87,17 @@ const plannerSchema = `{
           "completionQuote": {"type": "string"},
           "registrations": {
             "type": "array",
-            "maxItems": 12,
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["name", "url", "deadline", "deadlineText", "messageIds"],
+              "required": ["name", "url", "deadline", "deadlineText", "submissionDeadline", "submissionDeadlineText", "messageIds"],
               "properties": {
                 "name": {"type": "string"},
                 "url": {"type": "string"},
                 "deadline": {"type": "string"},
                 "deadlineText": {"type": "string"},
+                "submissionDeadline": {"type": "string"},
+                "submissionDeadlineText": {"type": "string"},
                 "messageIds": {
                   "type": "array",
                   "items": {"type": "string"}

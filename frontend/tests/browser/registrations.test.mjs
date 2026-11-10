@@ -30,7 +30,8 @@ function seedRegistrations() {
       name: 'Orbit Jam registration',
       url: 'https://events.example.test/orbit-jam/register',
       deadline: '2026-02-06',
-      deadlineText: 'Fri, Feb 6, 6:00 PM'
+      deadlineText: 'Fri, Feb 6, 6:00 PM',
+      submissionDeadline: '2026-02-10', submissionDeadlineText: 'Feb 10, 7:00 PM'
     },
     { name: 'Roster form', url: 'https://events.example.test/orbit-jam/roster' },
     { name: 'Travel notes', deadline: '2026-02-02' },
@@ -220,6 +221,7 @@ test('board cards and the task editor show registration labels, deadlines, and u
   const browser = await chromium.launch()
   try {
     const page = await browser.newPage()
+    await page.clock.setFixedTime(new Date(2026, 1, 1, 12))
     page.setDefaultTimeout(5000)
     await page.addInitScript(seedRegistrations)
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
@@ -231,10 +233,10 @@ test('board cards and the task editor show registration labels, deadlines, and u
 
     const compactRows = card(1).locator('.registration')
     assert.equal(await compactRows.count(), 3)
-    assert.equal((await compactRows.nth(0).locator('.registration-deadline').innerText()).trim(), 'Due Fri, Feb 6, 6:00 PM')
-    assert.equal((await compactRows.nth(1).locator('.registration-deadline').innerText()).trim(), 'Deadline unknown')
-    assert.equal((await compactRows.nth(2).locator('.registration-deadline').innerText()).trim(), 'Due 2026-02-02')
-    assert.equal((await card(1).locator('.registration-more').innerText()).trim(), '+2 more in the editor')
+    assert.match(await compactRows.nth(0).innerText(), /Travel notes[\s\S]*Registration · 2026-02-02/)
+    assert.match(await compactRows.nth(1).innerText(), /Orbit Jam registration[\s\S]*Registration · Fri, Feb 6, 6:00 PM[\s\S]*Submission · Feb 10, 7:00 PM/)
+    assert.match(await compactRows.nth(2).innerText(), /Roster form[\s\S]*Deadline unknown/)
+    assert.equal(await card(1).locator('.registration-more').innerText(), 'View all 5 activities')
     assert.equal(await card(1).locator('.registration-link').count(), 2)
     assert.equal(
       await card(1).locator('.registration-link').first().getAttribute('href'),
@@ -245,7 +247,7 @@ test('board cards and the task editor show registration labels, deadlines, and u
       await card(2).getByRole('link', { name: 'Poster entry', exact: true }).getAttribute('href'),
       'https://events.example.test/poster/entry'
     )
-    assert.match(await card(2).innerText(), /Due Mon, Feb 9/)
+    assert.match(await card(2).innerText(), /Registration · Mon, Feb 9/)
     assert.equal((await page.locator('.board').innerText()).includes('events.example.test'), false)
 
     const unknown = card(3).locator('.registration')
@@ -270,16 +272,17 @@ test('board cards and the task editor show registration labels, deadlines, and u
     assert.equal(await page.locator('article[data-selected="true"]').count(), 1)
 
     // The editor exposes the full verified list, including link-only and deadline-only rows.
-    await card(1).locator('.edit-title').click()
+    await card(1).getByRole('button', { name: 'View all 5 activities' }).click()
     await page.locator('#event-title').waitFor()
     assert.equal(await page.locator('#event-description').inputValue(), '')
     const editor = page.locator('.registrations-field')
     await editor.waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Activity deadlines')
     assert.equal(await editor.locator('.registration').count(), 5)
     assert.match(await editor.innerText(), /Orbit Jam registration/)
-    assert.match(await editor.innerText(), /Due Fri, Feb 6, 6:00 PM/)
+    assert.match(await editor.innerText(), /Registration · Fri, Feb 6, 6:00 PM/)
     assert.match(await editor.innerText(), /Roster form[\s\S]*Deadline unknown/)
-    assert.match(await editor.innerText(), /Travel notes[\s\S]*Due 2026-02-02/)
+    assert.match(await editor.innerText(), /Travel notes[\s\S]*Registration · 2026-02-02/)
     assert.match(await editor.innerText(), /Announcement thread[\s\S]*Deadline unknown/)
     assert.match(await editor.innerText(), /Unsafe signup/)
     assert.equal(await editor.locator('.registration-link').count(), 2)
@@ -308,6 +311,7 @@ test('pending AI details show proposed and current registrations with safe links
   const browser = await chromium.launch()
   try {
     const page = await browser.newPage()
+    await page.clock.setFixedTime(new Date(2026, 1, 1, 12))
     page.setDefaultTimeout(5000)
     await page.addInitScript(seedRegistrations)
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`)
@@ -323,14 +327,14 @@ test('pending AI details show proposed and current registrations with safe links
     const proposed = activity.locator('.change-registrations')
 
     assert.match(await current.innerText(), /Current Orbit Jam signup/)
-    assert.match(await current.innerText(), /Due Thu, Feb 5/)
+    assert.match(await current.innerText(), /Registration · Thu, Feb 5/)
     assert.match(await current.innerText(), /Current travel note[\s\S]*Deadline unknown/)
     assert.equal(await current.locator('.registration-link').count(), 1)
 
     assert.match(await activity.innerText(), /Proposed registrations/i)
     assert.match(await proposed.innerText(), /Orbit Jam registration/)
-    assert.match(await proposed.innerText(), /Due Fri, Feb 6, 6:00 PM/)
-    assert.match(await proposed.innerText(), /Badge pickup[\s\S]*Due 2026-02-07/)
+    assert.match(await proposed.innerText(), /Registration · Fri, Feb 6, 6:00 PM/)
+    assert.match(await proposed.innerText(), /Badge pickup[\s\S]*Registration · 2026-02-07/)
     assert.match(await proposed.innerText(), /Lineup note[\s\S]*Deadline unknown/)
     assert.match(await proposed.innerText(), /Unsafe signup/)
     assert.equal(await proposed.locator('.registration-link').count(), 1)

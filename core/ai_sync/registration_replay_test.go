@@ -2,8 +2,10 @@ package ai_sync
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,7 +44,7 @@ func TestUpgradeEnrichesOnlyLinkedRegistrationsAndRetriesWithoutReplayingPhase(t
 	cards := []calendar.Event{{ID: 3, Title: "Workshop registration", SummaryKey: "workshop", Phase: "progressing"}, {ID: 4, Title: "Implement worker", Phase: "progressing"}, {ID: 5, Title: "Completed registration", Phase: "done"}}
 	board := &replayTestBoard{testConversationBoard: base, db: s.db, cards: cards}
 	s.calendar = board
-	if _, err := s.db.Exec(`INSERT INTO chat_links VALUES('workshop-thread',3),('release-thread',4),('closed-thread',5); INSERT INTO chat_sources VALUES('old-form'),('build-report'),('finished-form'); UPDATE conversation_registration_upgrade SET last_legacy_row=(SELECT MAX(rowid) FROM chat_sources); INSERT INTO chat_sources VALUES('after-upgrade')`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO chat_links VALUES('workshop-thread',3),('release-thread',4),('closed-thread',5); INSERT INTO chat_sources VALUES('old-form'),('build-report'),('finished-form'); UPDATE conversation_registration_backfills SET last_legacy_row=(SELECT MAX(rowid) FROM chat_sources) WHERE version=2; INSERT INTO chat_sources VALUES('after-upgrade')`); err != nil {
 		t.Fatal(err)
 	}
 	history := []conversations.Message{{ID: "old-form", ThreadID: "workshop-thread", Text: "I am signing up for Orbit Jam", At: now.Unix() - 3600}, {ID: "build-report", ThreadID: "release-thread", Text: "deployed", At: now.Unix() - 3000}, {ID: "finished-form", ThreadID: "closed-thread", Text: "form closed", At: now.Unix() - 2500}, {ID: "after-upgrade", ThreadID: "workshop-thread", Text: "already handled", At: now.Unix()}}
@@ -93,5 +95,51 @@ func TestRegistrationFollowupCanUseEarlierFormWithoutReplayingIt(t *testing.T) {
 	b := conversationBatches(history, map[string]bool{"decision": true})
 	if len(b) != 1 || len(b[0]) != 3 || b[0][0].ID != "menu" || !b[0][0].ContextOnly || b[0][1].ID != "small-talk" || !b[0][1].ContextOnly || b[0][2].ContextOnly {
 		t.Fatalf("registration follow-up lost its bounded same-thread context: %+v", b)
+	}
+}
+
+func TestInterestUpgradeRevisitsAnUnlinkedSurveyOnce(t *testing.T) {
+	s, base := newTestConversationSync(t)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	ctx := context.Background()
+	// Both raw messages and a previous-version checkpoint predate this upgrade.
+	if _, err := s.db.Exec(`INSERT INTO chat_sources VALUES('ask'),('listing'),(?); UPDATE conversation_registration_backfills SET last_legacy_row=(SELECT MAX(rowid) FROM chat_sources) WHERE version=2`, fmt.Sprintf("registration-v1:%x", sha256.Sum256([]byte("listing")))); err != nil {
+		t.Fatal(err)
+	}
+	base.seen["ask"], base.seen["listing"] = true, true
+	board := &replayTestBoard{testConversationBoard: base, db: s.db}
+	s.calendar = board
+	history := []conversations.Message{{ID: "ask", ThreadID: "survey", Role: conversations.RoleUser, Text: "帮我找近期可以参加的比赛，先比较备选。", At: now.Unix() - 100}, {ID: "listing", ThreadID: "survey", Role: conversations.RoleAssistant, Text: "North River 报名入口 https://example.org/north", At: now.Unix() - 90}}
+	s.read = func(context.Context, string, time.Time, time.Time) ([]conversations.Message, error) {
+		return append([]conversations.Message(nil), history...), nil
+	}
+	calls := 0
+	s.plan = func(_ context.Context, _, _ string, cards []calendar.Event, msgs []conversations.Message) ([]calendar.ChatChange, error) {
+		calls++
+		if len(cards) != 0 || !msgs[0].RegistrationOnly {
+			t.Fatal("expected candidate-only discovery")
+		}
+		return []calendar.ChatChange{{Source: calendar.ChatEvidence{ID: "listing", ThreadID: "survey", Quote: "North River 报名入口", At: now.Unix() - 90}, TaskKey: "north-river", Title: "活动报名清单", Phase: "done", Description: "old notes", Result: "submitted", Registrations: []calendar.Registration{{Name: "North River", URL: "https://example.org/north"}}}}, nil
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := s.run(ctx, s.Status().CodexPath, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 || len(board.written) != 1 {
+		t.Fatalf("calls=%d writes=%d", calls, len(board.written))
+	}
+	c := board.written[0]
+	if c.Phase != calendar.PhaseTodo || c.Result != "" || c.Description != "" || c.TaskKey != "event-opportunities" || len(c.Registrations) != 1 {
+		t.Fatalf("survey replay created a commitment: %+v", c)
+	}
+}
+
+func TestRegistrationSurveyContextSurvivesAnInterveningTurn(t *testing.T) {
+	msgs := []conversations.Message{{ID: "ask", ThreadID: "ours", Role: conversations.RoleUser, At: 1, Text: "请帮我看看有什么比赛"}, {ID: "other", ThreadID: "other", Role: conversations.RoleUser, At: 2, Text: "帮我找附近的会议"}, {ID: "aside", ThreadID: "ours", Role: conversations.RoleUser, At: 3, Text: "好的"}, {ID: "form", ThreadID: "ours", Role: conversations.RoleAssistant, At: 4, Text: "工作坊报名 https://example.org/register"}}
+	b := conversationBatches(msgs, map[string]bool{"form": true})
+	if len(b) != 1 || len(b[0]) != 3 || b[0][0].ID != "ask" || !b[0][0].ContextOnly || b[0][1].ID != "aside" || b[0][2].ContextOnly {
+		t.Fatalf("wrong survey context %+v", b)
 	}
 }

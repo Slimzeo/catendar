@@ -3,6 +3,7 @@ package conversations
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -16,12 +17,20 @@ func registrationJSON(name, url, deadline, deadlineText string, messageIDs ...st
 		messageIDs = []string{}
 	}
 	return map[string]any{
-		"name":         name,
-		"url":          url,
-		"deadline":     deadline,
-		"deadlineText": deadlineText,
-		"messageIds":   messageIDs,
+		"name":                   name,
+		"url":                    url,
+		"deadline":               deadline,
+		"deadlineText":           deadlineText,
+		"submissionDeadline":     "",
+		"submissionDeadlineText": "",
+		"messageIds":             messageIDs,
 	}
+}
+
+func withSubmission(registration map[string]any, deadline, deadlineText string) map[string]any {
+	registration["submissionDeadline"] = deadline
+	registration["submissionDeadlineText"] = deadlineText
+	return registration
 }
 
 func changeWithRegistrations(change map[string]any, registrations ...map[string]any) map[string]any {
@@ -339,11 +348,14 @@ func TestPlanRegistrationSchemaAndExistingPromptRegistrations(t *testing.T) {
 	}
 	schemaText := string(schema)
 	for _, required := range []string{
-		`"registrations"`, `"deadlineText"`, `"messageIds"`, `"maxItems": 12`,
+		`"registrations"`, `"deadlineText"`, `"submissionDeadline"`, `"submissionDeadlineText"`, `"messageIds"`,
 	} {
 		if !strings.Contains(schemaText, required) {
 			t.Fatalf("output schema does not contain %q: %s", required, schemaText)
 		}
+	}
+	if strings.Contains(schemaText, `"maxItems"`) {
+		t.Fatalf("output schema still caps registrations: %s", schemaText)
 	}
 	if !json.Valid(schema) {
 		t.Fatal("output schema is not valid JSON")
@@ -379,5 +391,310 @@ func TestRegistrationNeverBorrowsAnotherTableRowsURLOrCutoff(t *testing.T) {
 	items := []modelRegistration{{Name: "Orbit Jam", URL: "https://forms.example/alt", Deadline: "2026-11-11", DeadlineText: "deadline Nov 11 18:00", MessageIDs: []string{"s"}}, {Name: "Orbit Jam", URL: "https://forms.example/orbit?a=1", MessageIDs: []string{"s"}}, {Name: "Invented", URL: "https://forms.example/alt", MessageIDs: []string{"s"}}}
 	if got := validateRegistrationProposals(&items, m, all, nil); len(got) != 0 {
 		t.Fatalf("accepted mismatched event, truncated URL or fabricated label: %+v", got)
+	}
+}
+
+func TestPlanSeparatesApplicationAndSubmissionCutoffs(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "Orbit Jam", Project: "orbit", Role: RoleUser, At: dayStart.Unix(),
+		Text: "### 1. Orbit Jam\n\n报名截止：12 月 1 日 23:59（北京时间）。报名表：https://forms.example/orbit\n\n作品提交：12 月 9 日 18:00（北京时间）。\n\n比赛开始：12 月 10 日 10:00。",
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "### 1. Orbit Jam", "orbit-jam", 0, "Orbit Jam", "todo", "准备报名", "", false),
+			withSubmission(
+				registrationJSON("Orbit Jam", "https://forms.example/orbit", "2026-12-01", "报名截止：12 月 1 日 23:59（北京时间）", "m1"),
+				"2026-12-09", "作品提交：12 月 9 日 18:00（北京时间）",
+			),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan mixed cutoffs: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 1 {
+		t.Fatalf("mixed cutoffs were lost: %#v", changes)
+	}
+	registration := changes[0].Registrations[0]
+	if registration.URL != "https://forms.example/orbit" ||
+		registration.Deadline != "2026-12-01" || registration.DeadlineText != "报名截止：12 月 1 日 23:59（北京时间）" ||
+		registration.SubmissionDeadline != "2026-12-09" || registration.SubmissionDeadlineText != "作品提交：12 月 9 日 18:00（北京时间）" {
+		t.Fatalf("application and submission cutoffs were not kept separate: %#v", registration)
+	}
+}
+
+func TestPlanSubmissionCutoffBeforeOrAfterCue(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{
+		{ID: "m1", ThreadID: "t1", ThreadTitle: "批次一", Project: "orbit", Role: RoleUser, At: dayStart.Unix(),
+			Text: "Orbit Jam：12 月 1 日前报名，12 月 9 日前交作品。"},
+		{ID: "m2", ThreadID: "t1", ThreadTitle: "批次二", Project: "orbit", Role: RoleUser, At: dayStart.Add(5 * time.Minute).Unix(),
+			Text: "Alt Jam：11 月 19 日 19:00 交作品。"},
+	}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "12 月 1 日前报名", "orbit-jam", 0, "Orbit Jam", "todo", "准备报名", "", false),
+			withSubmission(
+				registrationJSON("Orbit Jam", "", "2026-12-01", "12 月 1 日前报名", "m1"),
+				"2026-12-09", "12 月 9 日前交作品",
+			),
+			withSubmission(
+				registrationJSON("Alt Jam", "", "", "", "m2"),
+				"2026-11-19", "11 月 19 日 19:00",
+			),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan submission phrasing: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 2 {
+		t.Fatalf("submission cutoffs were lost: %#v", changes)
+	}
+	first, second := changes[0].Registrations[0], changes[0].Registrations[1]
+	if first.Deadline != "2026-12-01" || first.SubmissionDeadline != "2026-12-09" ||
+		first.DeadlineText != "12 月 1 日前报名" || first.SubmissionDeadlineText != "12 月 9 日前交作品" {
+		t.Fatalf("date-before-cue submission was not separated: %#v", first)
+	}
+	if second.SubmissionDeadline != "2026-11-19" || second.SubmissionDeadlineText != "11 月 19 日 19:00" {
+		t.Fatalf("date-after-cue submission was not kept: %#v", second)
+	}
+}
+
+func TestPlanAcceptsExplicitEnglishSubmissionCutoff(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "Orbit Jam", Project: "orbit", Role: RoleUser, At: dayStart.Unix(),
+		Text: "### Orbit Jam\n\nApplications close Dec 1. Registration: https://forms.example/orbit\n\nFinal project submission: Dec 20 at 17:00 UTC.",
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "### Orbit Jam", "orbit-jam", 0, "Orbit Jam", "todo", "准备报名", "", false),
+			withSubmission(
+				registrationJSON("Orbit Jam", "https://forms.example/orbit", "2026-12-01", "Applications close Dec 1", "m1"),
+				"2026-12-20", "Final project submission: Dec 20 at 17:00 UTC",
+			),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan English cutoffs: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 1 {
+		t.Fatalf("English cutoffs were lost: %#v", changes)
+	}
+	registration := changes[0].Registrations[0]
+	if registration.Deadline != "2026-12-01" || registration.SubmissionDeadline != "2026-12-20" ||
+		registration.SubmissionDeadlineText != "Final project submission: Dec 20 at 17:00 UTC" {
+		t.Fatalf("English application/submission cutoffs were not separated: %#v", registration)
+	}
+}
+
+func TestPlanKeepsFortyTableRegistrations(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	var text strings.Builder
+	registrations := make([]map[string]any, 0, 40)
+	for index := 1; index <= 40; index++ {
+		name := fmt.Sprintf("Event %02d", index)
+		link := fmt.Sprintf("https://forms.example/e%02d", index)
+		fmt.Fprintf(&text, "| %s | Apply: %s | deadline 2026-12-01 10:00 |\n", name, link)
+		registrations = append(registrations, registrationJSON(name, link, "2026-12-01", "deadline 2026-12-01 10:00", "m1"))
+	}
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "报名表", Project: "forms", Role: RoleAssistant, At: dayStart.Unix(), Text: text.String(),
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "Event 01", "event-forms", 0, "报名表", "todo", "整理报名资料", "", false),
+			registrations...,
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan forty registrations: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 40 {
+		t.Fatalf("a long registration list was truncated: %#v", changes)
+	}
+	first, last := changes[0].Registrations[0], changes[0].Registrations[39]
+	if first.Name != "Event 01" || first.URL != "https://forms.example/e01" ||
+		last.Name != "Event 40" || last.URL != "https://forms.example/e40" || last.Deadline != "2026-12-01" {
+		t.Fatalf("unexpected long-list registrations: %#v", changes[0].Registrations)
+	}
+}
+
+func TestPlanHeadingSectionsStopBeforeTheNextEvent(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "双活动", Project: "events", Role: RoleUser, At: dayStart.Unix(),
+		Text: "### 1. Orbit Jam\n\n报名表：https://forms.example/orbit\n\n截止 11月20日 23:59\n\n### 2. Alt Jam\n\n报名表：https://forms.example/alt\n\n截止 11月15日 18:00",
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "### 1. Orbit Jam", "events", 0, "双活动", "todo", "准备报名", "", false),
+			registrationJSON("Orbit Jam", "https://forms.example/orbit", "2026-11-20", "截止 11月20日 23:59", "m1"),
+			registrationJSON("Alt Jam", "https://forms.example/alt", "2026-11-15", "截止 11月15日 18:00", "m1"),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan heading sections: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 2 {
+		t.Fatalf("heading sections were lost: %#v", changes)
+	}
+	first, second := changes[0].Registrations[0], changes[0].Registrations[1]
+	if first.Name != "Orbit Jam" || first.URL != "https://forms.example/orbit" || first.Deadline != "2026-11-20" {
+		t.Fatalf("Orbit Jam borrowed another heading: %#v", first)
+	}
+	if second.Name != "Alt Jam" || second.URL != "https://forms.example/alt" || second.Deadline != "2026-11-15" {
+		t.Fatalf("Alt Jam borrowed another heading: %#v", second)
+	}
+}
+
+func TestPlanKeepsDistinctEventsWithOneSharedForm(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "共用表单", Project: "events", Role: RoleAssistant, At: dayStart.Unix(),
+		Text: "| Orbit Jam | Apply: https://forms.example/apply | deadline 2026-11-20 17:00 |\n| Alt Jam | Apply: https://forms.example/apply | deadline 2026-11-22 18:00 |",
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "Orbit Jam", "events", 0, "共用表单", "todo", "准备报名", "", false),
+			registrationJSON("Orbit Jam", "https://forms.example/apply", "2026-11-20", "deadline 2026-11-20 17:00", "m1"),
+			registrationJSON("Alt Jam", "https://forms.example/apply", "2026-11-22", "deadline 2026-11-22 18:00", "m1"),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan shared form: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 2 {
+		t.Fatalf("a shared form collapsed distinct events: %#v", changes)
+	}
+}
+
+func TestPlanDoesNotUseEventDateAsSubmissionDeadline(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{{
+		ID: "m1", ThreadID: "t1", ThreadTitle: "作品提交", Project: "orbit", Role: RoleUser, At: dayStart.Unix(),
+		Text: "### Orbit Jam\n\n活动日期：11 月 20 日。报名截止：11 月 15 日。\n\n作品提交：11 月 10 日 18:00。",
+	}}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "### Orbit Jam", "orbit-jam", 0, "Orbit Jam", "todo", "准备报名", "", false),
+			withSubmission(
+				registrationJSON("Orbit Jam", "", "2026-11-15", "报名截止：11 月 15 日", "m1"),
+				"2026-11-20", "活动日期：11 月 20 日",
+			),
+			withSubmission(
+				registrationJSON("Orbit Jam", "", "", "", "m1"),
+				"2026-11-10", "作品提交：11 月 10 日 18:00",
+			),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan event date: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 1 {
+		t.Fatalf("unexpected registration response: %#v", changes)
+	}
+	registration := changes[0].Registrations[0]
+	if registration.Deadline != "2026-11-15" ||
+		registration.SubmissionDeadline != "2026-11-10" || registration.SubmissionDeadlineText != "作品提交：11 月 10 日 18:00" {
+		t.Fatalf("event or application date was used as submission: %#v", registration)
+	}
+}
+
+func TestPlanAcceptsSubmissionFromAnIndependentSameThreadMessage(t *testing.T) {
+	dayStart := time.Date(2026, time.November, 9, 9, 0, 0, 0, time.Local)
+	fixture := defaultPlanFixture()
+	fixture.messages = []Message{
+		{ID: "m1", ThreadID: "t1", ThreadTitle: "Orbit Jam", Project: "orbit", Role: RoleUser, At: dayStart.Unix(),
+			Text: "Orbit Jam 准备报名。"},
+		{ID: "m2", ThreadID: "t1", ThreadTitle: "Orbit Jam", Project: "orbit", Role: RoleAssistant, At: dayStart.Add(5 * time.Minute).Unix(),
+			Text: "报名表：https://forms.example/orbit，作品提交：12 月 9 日 18:00。"},
+	}
+	output := modelJSON(t, []map[string]any{
+		changeWithRegistrations(
+			changeJSON("m1", "Orbit Jam", "orbit-jam", 0, "Orbit Jam", "todo", "准备报名", "", false),
+			withSubmission(
+				registrationJSON("Orbit Jam", "https://forms.example/orbit", "", "", "m1", "m2"),
+				"2026-12-09", "作品提交：12 月 9 日 18:00",
+			),
+		),
+	})
+	setPlannerFixtureEnv(t, fakePlannerFixture{Output: output})
+
+	changes, err := Plan(context.Background(), os.Args[0], fixture.day, fixture.events, fixture.messages)
+	if err != nil {
+		t.Fatalf("plan independent sources: %v", err)
+	}
+	if len(changes) != 1 || len(changes[0].Registrations) != 1 {
+		t.Fatalf("independent evidence was lost: %#v", changes)
+	}
+	registration := changes[0].Registrations[0]
+	if registration.URL != "https://forms.example/orbit" || registration.SubmissionDeadline != "2026-12-09" {
+		t.Fatalf("URL or submission from the second message was lost: %#v", registration)
+	}
+}
+
+func TestSurveyKeepsEvidenceWithinItsNumberedOrBulletedActivity(t *testing.T) {
+	base := time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local).Unix()
+	m := Message{ID: "a", ThreadID: "s", Role: RoleAssistant, At: base, Text: "- Orbit 1 报名入口：https://forms.example/o1\n- Orbit 10 报名入口：https://forms.example/o10，11月12日截止"}
+	n := Message{ID: "b", ThreadID: "s", Role: RoleAssistant, At: base + 1, Text: "另一个比赛，Nova 报名表：https://forms.example/nova"}
+	all := map[string]Message{"a": m, "b": n}
+	items := []modelRegistration{{Name: "Orbit 1", URL: "https://forms.example/o10", DeadlineText: "11月12日截止", MessageIDs: []string{"a"}}, {Name: "Orbit 1", URL: "https://forms.example/nova", MessageIDs: []string{"a", "b"}}}
+	if got := validateRegistrationProposals(&items, m, all, nil); len(got) != 0 {
+		t.Fatalf("crossed an event or message boundary: %+v", got)
+	}
+}
+
+func TestSurveyUsesTableHeadersAndEnglishNameBoundaries(t *testing.T) {
+	m := Message{ID: "s", ThreadID: "x", Role: RoleAssistant, At: time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local).Unix(), Text: "| Event | Registration deadline | Submission deadline | Event day | Official site |\n| -- | -- | -- | -- | -- |\n| Orbit 1 | Nov 16 | Nov 20 | Nov 25 | https://forms.example/one |\n| Orbit 10 | Nov 12 | Nov 17 | Nov 26 | https://forms.example/ten |"}
+	facts := []modelRegistration{{Name: "Orbit 1", URL: "https://forms.example/one", Deadline: "2026-11-16", DeadlineText: "Nov 16", SubmissionDeadline: "2026-11-20", SubmissionDeadlineText: "Nov 20", MessageIDs: []string{"s"}}, {Name: "Orbit 10", URL: "https://forms.example/one", DeadlineText: "Nov 26", SubmissionDeadlineText: "Nov 12", MessageIDs: []string{"s"}}}
+	got := validateRegistrationProposals(&facts, m, map[string]Message{"s": m}, nil)
+	if len(got) != 1 || got[0].Deadline != "2026-11-16" || got[0].SubmissionDeadline != "2026-11-20" || got[0].URL != facts[0].URL {
+		t.Fatalf("mixed table headers: %+v", got)
+	}
+	if !registrationHasName(registrationNorm("You can apply for Orbit 1 now"), registrationNorm("Orbit 1")) || registrationHasName(registrationNorm("Look at Orbit 10 today"), registrationNorm("Orbit 1")) {
+		t.Fatal("English event word boundaries lost")
+	}
+}
+
+func TestReadAndPlanRetainTheLastRowOfALongSurvey(t *testing.T) {
+	const last = "| Last Summit | Registration: https://forms.example/last |"
+	table := strings.Repeat("| Workshop | Registration information pending |\n", maxMessageBytes/12) + last
+	var messages []Message
+	appendPublicMessage(&messages, map[string]struct{}{}, "thread", "turn", threadItem{ID: "item"}, "Events", "", RoleAssistant, table, 1)
+	prompt, err := buildPrompt("2026-11-10", nil, messages)
+	if err != nil || len(messages) != 1 || !strings.HasSuffix(messages[0].Text, last) || !strings.Contains(prompt, last) {
+		t.Fatalf("lost the tail of a public event survey: %v", err)
+	}
+	if len(plannerMessageText(strings.Repeat("x", maxMessageBytes*2))) != maxMessageBytes {
+		t.Fatal("ordinary message previews should stay bounded")
 	}
 }
