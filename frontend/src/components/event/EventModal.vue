@@ -284,7 +284,11 @@ function handleEditorKeydown(event: KeyboardEvent) {
         </div>
       </template>
       <form id="event-form" class="event-form" @submit.prevent="handleSave" @keydown="handleEditorKeydown">
-        <div ref="formBodyRef" class="form-body">
+        <div
+          ref="formBodyRef" class="form-body" :class="{ 'hide-scrollbar': isTask }"
+          :tabindex="isTask ? 0 : undefined" :role="isTask ? 'region' : undefined"
+          :aria-label="isTask ? 'Task details' : undefined"
+        >
           <div class="form-group">
             <div class="label-row">
               <label for="event-title">Title</label>
@@ -542,6 +546,11 @@ function handleEditorKeydown(event: KeyboardEvent) {
   padding: 0 18px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.form-body:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 
 .form-group {

@@ -76,6 +76,26 @@ body,
   overflow: hidden;
 }
 
+/* Keep native scrolling and hit testing. Both native and Naive UI rails
+   can appear on macOS when the user scrolls or uses an external mouse. */
+.hide-scrollbar,
+.hide-scrollbar textarea {
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+}
+
+.hide-scrollbar::-webkit-scrollbar,
+.hide-scrollbar textarea::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.hide-scrollbar [data-scrollbar-rail],
+.n-modal-body-wrapper:has(.task-panel) [data-scrollbar-rail] {
+  display: none;
+}
+
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
