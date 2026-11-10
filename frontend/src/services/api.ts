@@ -13,7 +13,6 @@ import type {
   EventPhase
 } from '@/types'
 import { isEventPhase } from '@/constants/eventPhases'
-import { normalizeRegistrations } from '@/utils/registrations'
 
 // Wails generates individual functions in frontend/wailsjs/go/main/CalendarApp
 import {
@@ -43,14 +42,13 @@ import {
   ResolveConversationChange
 } from '../../wailsjs/go/main/AISyncApp'
 
-type RawEvent = Awaited<ReturnType<typeof CreateEvent>> & { registrations?: unknown }
+type RawEvent = Awaited<ReturnType<typeof CreateEvent>>
 
 function normalizeEvent(raw: RawEvent): CalendarEvent {
   return {
     ...raw,
     phase: isEventPhase(raw.phase) ? raw.phase : 'todo',
-    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined,
-    registrations: normalizeRegistrations(raw.registrations)
+    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : undefined
   }
 }
 
@@ -129,10 +127,8 @@ function normalizeConversationStatus(raw: Partial<ConversationStatus> | null | u
 function normalizeActivity(activity: ChatActivity): ChatActivity {
   return {
     ...activity,
-    change: { ...activity.change, registrations: normalizeRegistrations(activity.change.registrations) },
-    current: activity.current
-      ? { ...activity.current, registrations: normalizeRegistrations(activity.current.registrations) }
-      : undefined
+    change: { ...activity.change },
+    current: activity.current ? { ...activity.current } : undefined
   }
 }
 

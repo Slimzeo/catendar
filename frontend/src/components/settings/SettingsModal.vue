@@ -34,6 +34,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'update:show', value: boolean): void
   (event: 'saved'): void
+  (event: 'open-email', sourceURL: string): void
   (event: 'email-sync'): void
   (event: 'cancel-email-sync'): void
 }>()
@@ -290,7 +291,11 @@ defineExpose({ dismiss })
           <n-button text size="small" @click="activateTab('components', true)">Manage sources</n-button>
         </div>
 
-        <conversation-sync-panel v-if="preferences.active.codex" :active="show && activeTab === 'ai-sync'" />
+        <conversation-sync-panel
+          v-if="preferences.active.codex"
+          :active="show && activeTab === 'ai-sync'"
+          @open-email="url => emit('open-email', url)"
+        />
 
         <template v-if="preferences.active.email">
           <n-alert v-if="syncing" type="info" :show-icon="false" class="sync-notice">

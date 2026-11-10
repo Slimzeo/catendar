@@ -364,8 +364,8 @@ func writeRegistrationDetailsTx(ctx context.Context, tx *sql.Tx, event *Event, n
 	}
 	event.UpdatedAt = now
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE events SET registrations = ?, deadline = ?, updated_at = ? WHERE id = ?",
-		raw, event.Deadline, now, event.ID,
+		"UPDATE events SET registrations = ?, deadline = ?, description = ?, updated_at = ? WHERE id = ?",
+		raw, event.Deadline, event.Description, now, event.ID,
 	); err != nil {
 		return fmt.Errorf("update event registrations: %w", err)
 	}
@@ -374,8 +374,8 @@ func writeRegistrationDetailsTx(ctx context.Context, tx *sql.Tx, event *Event, n
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE event_days SET registrations = ?, deadline = ?, updated_at = ? WHERE event_id = ? AND day = ?",
-		raw, event.Deadline, now, event.ID, day,
+		"UPDATE event_days SET registrations = ?, deadline = ?, description = ?, updated_at = ? WHERE event_id = ? AND day = ?",
+		raw, event.Deadline, event.Description, now, event.ID, day,
 	); err != nil {
 		return fmt.Errorf("update board registrations: %w", err)
 	}

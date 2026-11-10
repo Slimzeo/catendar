@@ -16,13 +16,13 @@ function seedLongTask() {
   const day = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-')
   const task = {
     id: 7, title: 'Open calls', start: day, allDay: true, phase: 'progressing',
-    description: 'Collect links', result: 'Initial shortlist', color: '#7663b5', bold: false,
-    deadline: day, registrations: Array.from({length: 31}, (_, i) => ({
-      name: i === 30 ? 'Last studio opportunity' : '很长的工作坊报名和作品征集活动名称 '.repeat(3) + (i + 1),
-      url: 'https://events.example.test/' + i,
-      deadline: day, deadlineText: '报名截止 17:00（按主办方当地时间）',
-      submissionDeadline: day, submissionDeadlineText: '作品截止 23:59（按主办方当地时间）'
-    }))
+    result: 'Initial shortlist', color: '#7663b5', bold: false, deadline: day,
+    description: ['Collect links', ...Array.from({length: 31}, (_, i) => [
+      i === 30 ? 'Last studio opportunity' : '很长的工作坊报名和作品征集活动名称 '.repeat(3) + (i + 1),
+      '报名截止：17:00（按主办方当地时间）',
+      '作品截止：23:59（按主办方当地时间）',
+      'https://events.example.test/' + i
+    ].join('\n'))].join('\n\n')
   }
   window.savedTasks = []
   window.openedURLs = []
@@ -46,12 +46,13 @@ for (const engine of [webkit, chromium]) {
       await page.goto(server.resolvedUrls.local[0])
       // Give native scrollbars a visible width, as when an external mouse is attached.
       await page.addStyleTag({ content: '*::-webkit-scrollbar { width: 16px; height: 16px; }' })
-      const open = page.getByRole('button', {name:'View all 31 activities'})
+      const open = page.getByRole('button', {name:'Open calls', exact:true})
       const save = page.getByRole('button', {name:'Save task',exact:true})
       for (const [width, height] of [[1000,680], [360,280]]) {
         await page.setViewportSize({width, height})
         await open.click()
-        const last = page.getByRole('link', {name:'Last studio opportunity'})
+        const description = page.locator('.description-field .event-description.full')
+        const last = description.getByRole('link', {name:'https://events.example.test/30', exact:true})
         await last.waitFor()
         const pinned = async () => {
           for (const locator of [page.getByText('Edit task', {exact:true}), save, page.getByRole('button',{name:'Cancel',exact:true})]) {
@@ -59,7 +60,8 @@ for (const engine of [webkit, chromium]) {
             assert.ok(box && box.y >= -1 && box.y+box.height<=height+1 && box.x>=-1 && box.x+box.width<=width+1, 'editor action escaped the viewport at '+width+'x'+height)
           }
         }
-        await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Activity deadlines')
+        assert.equal(await description.getByRole('link').count(), 31)
+        assert.match(await description.innerText(), /Last studio opportunity[\s\S]*作品截止：23:59/)
         await pinned()
         const body = page.getByRole('region', { name: 'Task details' })
         const scroll = await body.evaluate(el => {
@@ -87,8 +89,9 @@ for (const engine of [webkit, chromium]) {
         await last.click()
         assert.equal(await page.evaluate(() => window.openedURLs.at(-1)), 'https://events.example.test/30')
         await pinned()
-        await page.getByRole('button', {name:'Show fewer',exact:true}).click()
-        assert.equal(await page.locator('.registrations-field .registration').count(), 4)
+        await page.getByRole('button', { name: 'Edit description', exact: true }).click()
+        assert.match(await page.locator('#event-description').inputValue(), /https:\/\/events\.example\.test\/30$/)
+        await page.getByRole('button', { name: 'Preview', exact: true }).click()
         assert.equal(await page.locator('.task-heading-name').innerText(), 'Open calls')
         await page.locator('#event-deadline').fill('2026-12-01')
         await page.locator('#event-deadline').scrollIntoViewIfNeeded()

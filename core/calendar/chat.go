@@ -344,7 +344,7 @@ func (s *Service) applyChatChangeTx(
 		return nil
 	}
 	if change.Title == before.Title && (change.Phase == "" || change.Phase == before.Phase) &&
-		(change.Description == "" || change.Description == before.Description) &&
+		!chatDescriptionWouldChange(before, change) &&
 		(change.Result == "" || change.Result == before.Result) &&
 		!registrationsWouldChange(before.Registrations, change.Registrations) {
 		// A new session can repeat an already known outcome. Link its evidence
@@ -602,17 +602,22 @@ func chatConflictReason(current, before Event, change ChatChange, ownership chat
 			return "the current phase has more recent evidence"
 		}
 	}
-	if ownership.manualDescription && change.Description != "" && change.Description != before.Description {
+	if ownership.manualDescription && chatDescriptionWouldChange(before, change) {
 		return "the suggestion would overwrite a manually edited description"
 	}
 	if ownership.manualResult && change.Result != "" && change.Result != before.Result {
 		return "the suggestion would overwrite a manually edited result"
 	}
 	description := strings.TrimSpace(change.Description)
-	if description != "" {
+	if description != "" && (chatDescriptionWouldChange(before, change) || chatDescriptionWouldChange(current, change)) {
+		descriptionOwnership := ownership.description
+		if descriptionOwnership.Valid {
+			descriptionOwnership.String = descriptionBase(before.Title, descriptionOwnership.String, before.Registrations)
+		}
 		if reason := chatFieldConflict("description", description,
-			before.Description, current.Description,
-			ownership.description, ownership.evidenceAt, change.Source.At); reason != "" {
+			descriptionBase(before.Title, before.Description, before.Registrations),
+			descriptionBase(current.Title, current.Description, current.Registrations),
+			descriptionOwnership, ownership.evidenceAt, change.Source.At); reason != "" {
 			return reason
 		}
 	}
@@ -628,6 +633,9 @@ func chatConflictReason(current, before Event, change ChatChange, ownership chat
 		if reason := registrationConflictReason(existing, change.Registrations); reason != "" {
 			return reason
 		}
+	}
+	if reason := registrationDescriptionConflict(before, current, change.Registrations); reason != "" {
+		return reason
 	}
 
 	if change.Phase == PhaseDone && result == "" {
@@ -729,6 +737,7 @@ func createChatTaskTx(ctx context.Context, tx *sql.Tx, day string, change *ChatC
 	if len(change.Registrations) > 0 {
 		event.Registrations, _ = mergeRegistrations(nil, change.Registrations, false)
 		event.Deadline = deriveRegistrationDeadline(event.Registrations, now.Format(dateLayout))
+		event.Description = appendRegistrationNotes(event.Title, event.Description, event.Registrations)
 		if event.Deadline != "" {
 			if err := recordRegistrationDeadline(ctx, tx, event.ID, event.Deadline); err != nil {
 				return Event{}, err
@@ -765,7 +774,8 @@ func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64
 	}
 	derived := false
 	updated, err := changeEventTx(ctx, tx, eventID, day, now, func(event *Event) {
-		if event.Description == change.Description {
+		before := *event
+		if !chatDescriptionWouldChange(before, *change) {
 			written.Description = ""
 		}
 		if event.Result == change.Result {
@@ -778,13 +788,11 @@ func updateChatTaskTx(ctx context.Context, tx *sql.Tx, day string, eventID int64
 		if change.Phase != "" {
 			event.Phase = change.Phase
 		}
-		if change.Description != "" {
-			event.Description = change.Description
-		}
 		if change.Result != "" {
 			event.Result = change.Result
 		}
-		merged, registrationsChanged := mergeRegistrations(event.Registrations, change.Registrations, overwriteRegistrations)
+		merged, registrationsChanged := mergeRegistrations(before.Registrations, change.Registrations, overwriteRegistrations)
+		event.Description = proposedDescription(before, *change, merged, overwriteRegistrations)
 		event.Registrations = merged
 		if registrationsChanged && ((!tracked && event.Deadline == "") || (owned.Valid && event.Deadline == owned.String)) {
 			event.Deadline = deriveRegistrationDeadline(merged, now.Format(dateLayout))

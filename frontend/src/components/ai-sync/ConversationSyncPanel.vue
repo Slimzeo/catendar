@@ -4,13 +4,17 @@ import { format } from 'date-fns'
 import { NButton, NInput, useMessage } from 'naive-ui'
 import type { ChatActivity } from '@/types'
 import { useConversationSyncStore } from '@/stores/conversationSync'
-import EventRegistrations from '@/components/event/EventRegistrations.vue'
+import EventDescription from '@/components/event/EventDescription.vue'
 
 const props = withDefaults(defineProps<{
   active?: boolean
 }>(), {
   active: true
 })
+
+const emit = defineEmits<{
+  (event: 'open-email', sourceURL: string): void
+}>()
 
 const conversationStore = useConversationSyncStore()
 const message = useMessage()
@@ -225,31 +229,34 @@ async function resolve(activity: ChatActivity, accept: boolean) {
         <div v-if="activity.current" class="current-card">
           <strong>Current card</strong> · {{ activity.current.phase }}
           <p v-if="activity.change.title !== activity.current.title">{{ activity.current.title }}</p>
-          <p v-if="activity.change.description && activity.change.description !== activity.current.description">Description · {{ activity.current.description || 'Empty' }}</p>
-          <p v-if="activity.change.result && activity.change.result !== activity.current.result">Result · {{ activity.current.result || 'Empty' }}</p>
-          <div v-if="activity.current.registrations?.length" class="current-registrations">
-            <span class="current-label">Registrations</span>
-            <event-registrations
-              class="panel-registrations"
-              :registrations="activity.current.registrations"
-              :context="activity.current.title"
+          <div
+            v-if="activity.change.description && activity.change.description !== activity.current.description"
+            class="current-field"
+          >
+            <span class="current-label">Description</span>
+            <event-description
+              v-if="activity.current.description"
+              class="current-description"
+              :text="activity.current.description"
+              full
+              @open-email="url => emit('open-email', url)"
             />
+            <p v-else class="current-empty">Empty</p>
+          </div>
+          <div
+            v-if="activity.change.result && activity.change.result !== activity.current.result"
+            class="current-field"
+          >
+            <span class="current-label">Result</span>
+            <p>{{ activity.current.result || 'Empty' }}</p>
           </div>
         </div>
-        <dl v-if="activity.change.description || activity.change.result || activity.change.registrations?.length" class="change-details">
-          <div v-if="activity.change.registrations?.length" class="change-detail">
-            <dt>Proposed registrations</dt>
-            <dd class="change-registrations">
-              <event-registrations
-                class="panel-registrations"
-                :registrations="activity.change.registrations"
-                :context="activity.change.title"
-              />
-            </dd>
-          </div>
+        <dl v-if="activity.change.description || activity.change.result" class="change-details">
           <div v-if="activity.change.description" class="change-detail">
             <dt>Proposed description</dt>
-            <dd class="change-description">{{ activity.change.description }}</dd>
+            <dd class="change-description">
+              <event-description :text="activity.change.description" full @open-email="url => emit('open-email', url)" />
+            </dd>
           </div>
           <div v-if="activity.change.result" class="change-detail">
             <dt>Proposed result</dt>
@@ -558,6 +565,8 @@ async function resolve(activity: ChatActivity, accept: boolean) {
 }
 
 .change-details {
+  --description-font-size: 10.5px;
+  --description-color: var(--text-secondary);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -613,12 +622,10 @@ async function resolve(activity: ChatActivity, accept: boolean) {
 }
 .current-card p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.current-registrations {
-  display: grid;
-  gap: 2px;
+.current-field {
+  --description-font-size: 10.5px;
+  --description-color: var(--text-secondary);
   margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid var(--border-soft);
 }
 
 .current-label {
@@ -629,13 +636,8 @@ async function resolve(activity: ChatActivity, accept: boolean) {
   text-transform: uppercase;
 }
 
-.panel-registrations {
-  --registration-font-size: 10.5px;
-}
-
-.change-registrations {
-  margin: 0;
-  padding: 0;
+.current-empty {
+  color: var(--text-tertiary);
 }
 
 .source-line {

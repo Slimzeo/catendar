@@ -38,3 +38,21 @@ export function sourceEmailUrl(text: string): string | undefined {
 export function isEmailLink(url: string): boolean {
   return url.toLowerCase().startsWith('catendar://email/')
 }
+
+// Only bare web links and the app's own catendar:// links may become anchors.
+// Credentials and other schemes are shown as plain text.
+export function safeDescriptionHref(value: string): string | undefined {
+  const raw = value.trim()
+  if (!raw || /[\s\\]/.test(raw)) return undefined
+  const candidate = /^www\./i.test(raw) ? `https://${raw}` : raw
+  try {
+    const url = new URL(candidate)
+    if (!url.hostname || url.username || url.password) return undefined
+    if (url.protocol === 'http:' || url.protocol === 'https:' || isEmailLink(candidate)) {
+      return candidate
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}

@@ -5,7 +5,7 @@ import { NButton, NCard, NDatePicker, NInput, NModal, NSelect, NSwitch } from 'n
 import type { EventEditField, CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases } from '@/constants/eventPhases'
 import ColorPalettePicker from './ColorPalettePicker.vue'
-import EventRegistrations from './EventRegistrations.vue'
+import EventDescription from './EventDescription.vue'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: 'update:show', value: boolean): void
+  (event: 'open-email', sourceURL: string): void
   (event: 'save', input: EventInput): void
   (event: 'request-delete', item: CalendarEvent): void
 }>()
@@ -38,8 +39,7 @@ const descriptionInputRef = ref<{ focus: () => void } | null>(null)
 const resultInputRef = ref<{ focus: () => void } | null>(null)
 const formBodyRef = ref<HTMLElement | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
-const registrationsExpanded = ref(false)
-const registrationPreviewLimit = 4
+const descriptionEditing = ref(true)
 const title = ref('')
 const description = ref('')
 const result = ref('')
@@ -61,8 +61,7 @@ const phaseOptions = eventPhases.map(value => ({ label: value, value }))
 
 const isEditing = computed(() => Boolean(props.event?.id))
 const isTask = computed(() => props.variant === 'board')
-const registrationDetails = ref<HTMLElement | null>(null)
-const registrations = computed(() => props.event?.registrations ?? [])
+const canPreviewDescription = computed(() => isEditing.value && isRichDescription(description.value))
 const modalTitle = computed(() => {
   if (isTask.value) return isEditing.value ? 'Edit task' : 'New task'
   return isEditing.value ? 'Edit event' : 'New event'
@@ -88,11 +87,9 @@ watch(
     initializeForm()
     nextTick(() => {
       if (formBodyRef.value) formBodyRef.value.scrollTop = 0
-      if (props.initialFocus === 'registrations' && registrationDetails.value) {
-        registrationDetails.value.focus({ preventScroll: true })
-        revealEditorElement(registrationDetails.value)
-      } else if (props.initialFocus === 'description') {
+      if (props.initialFocus === 'description') {
         descriptionInputRef.value?.focus()
+        revealEditorElement(formBodyRef.value?.querySelector<HTMLElement>('.description-field') ?? null)
       } else if (props.initialFocus === 'result' && phase.value === 'progressing') {
         resultInputRef.value?.focus()
       } else {
@@ -120,19 +117,21 @@ function revealEditorElement(element: HTMLElement | null) {
   }
 }
 
-async function toggleRegistrations() {
-  registrationsExpanded.value = !registrationsExpanded.value
-  await nextTick()
-  if (!registrationsExpanded.value) {
-    revealEditorElement(registrationDetails.value)
-    return
-  }
-  const row = registrationDetails.value?.querySelectorAll<HTMLElement>('li.registration')[registrationPreviewLimit]
-  if (!row) return
-  const focus = row.querySelector<HTMLElement>('a') ?? row
-  if (focus === row) row.tabIndex = -1
-  focus.focus({ preventScroll: true })
-  revealEditorElement(row)
+function isRichDescription(value: string): boolean {
+  return value.length > 120 || /https?:\/\/|www\.|catendar:\/\//i.test(value) || value.includes('\n')
+}
+
+function startDescriptionEdit() {
+  descriptionEditing.value = true
+  nextTick(() => {
+    descriptionInputRef.value?.focus()
+    revealEditorElement(formBodyRef.value?.querySelector<HTMLElement>('.description-field') ?? null)
+  })
+}
+
+function showDescriptionPreview() {
+  descriptionEditing.value = false
+  nextTick(() => revealEditorElement(formBodyRef.value?.querySelector<HTMLElement>('.description-read') ?? null))
 }
 
 function revealFormError() {
@@ -143,7 +142,8 @@ function initializeForm() {
   formError.value = ''
   titleError.value = ''
   showCalendarDetails.value = false
-  registrationsExpanded.value = props.initialFocus === 'registrations'
+  descriptionEditing.value = props.initialFocus === 'description' || !isEditing.value ||
+    !isRichDescription(props.event?.description || '')
   initializing = true
 
   try {
@@ -237,7 +237,7 @@ function handleSave() {
   const resultValue = result.value.trim()
   const input: EventInput = {
     title: trimmedTitle,
-    description: description.value.trim(),
+    description: description.value,
     start,
     end,
     allDay: allDay.value,
@@ -323,7 +323,7 @@ function handleEditorKeydown(event: KeyboardEvent) {
 
           <div class="form-row phase-row">
             <div class="form-group deadline-field">
-              <label for="event-deadline">{{ registrations.length ? 'Task deadline' : 'Deadline' }} <span class="optional">Optional</span></label>
+              <label for="event-deadline">Deadline <span class="optional">Optional</span></label>
               <div class="deadline-control">
                 <input
                   id="event-deadline"
@@ -362,19 +362,43 @@ function handleEditorKeydown(event: KeyboardEvent) {
           </div>
 
           <div class="form-group description-field">
-            <label for="event-description">
-              Description
-              <span class="optional">{{ isTask ? 'Optional' : 'Links are clickable' }}</span>
-            </label>
+            <div class="description-heading">
+              <label id="event-description-label" :for="descriptionEditing ? 'event-description' : undefined">
+                Description
+                <span class="optional">Optional</span>
+              </label>
+              <button
+                v-if="!descriptionEditing"
+                type="button"
+                class="description-action"
+                :disabled="saving"
+                @click="startDescriptionEdit"
+              >
+                Edit description
+              </button>
+              <button
+                v-else-if="canPreviewDescription"
+                type="button"
+                class="description-action"
+                :disabled="saving"
+                @click="showDescriptionPreview"
+              >
+                Preview
+              </button>
+            </div>
             <n-input
+              v-if="descriptionEditing"
               ref="descriptionInputRef"
               v-model:value="description"
               type="textarea"
               :input-props="{ id: 'event-description' }"
-              placeholder="Notes, location, or meeting link"
-              :rows="3"
+              placeholder="Notes, links, deadlines, or anything else"
+              :autosize="{ minRows: 3, maxRows: 12 }"
               :disabled="saving"
             />
+            <div v-else class="description-read" role="group" aria-labelledby="event-description-label">
+              <event-description :text="description" full @open-email="source => emit('open-email', source)" />
+            </div>
           </div>
 
           <div v-if="phase === 'progressing'" class="form-group result-field">
@@ -398,22 +422,6 @@ function handleEditorKeydown(event: KeyboardEvent) {
             <label>Result</label>
             <div class="result-readonly">{{ result }}</div>
           </div>
-
-          <section
-            v-if="isEditing && registrations.length" ref="registrationDetails" class="form-group registrations-field"
-            role="group" aria-label="Activity deadlines" tabindex="-1"
-          >
-            <div class="registration-heading">
-              <h3>Registrations <span class="optional">{{ registrations.length }}</span></h3>
-              <button
-                v-if="registrations.length > registrationPreviewLimit" type="button" class="registration-toggle"
-                aria-controls="task-registrations" :aria-expanded="registrationsExpanded" @click="toggleRegistrations"
-              >{{ registrationsExpanded ? 'Show fewer' : `View all ${registrations.length} activities` }}</button>
-            </div>
-            <div id="task-registrations" class="registrations-box">
-              <event-registrations :registrations="registrations" :limit="registrationsExpanded ? undefined : registrationPreviewLimit" :context="title" />
-            </div>
-          </section>
 
           <div class="calendar-details">
             <button
@@ -740,8 +748,52 @@ function handleEditorKeydown(event: KeyboardEvent) {
   margin-bottom: 17px;
 }
 
-.registrations-field {
-  margin-bottom: 17px;
+.description-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.description-heading label {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.description-action {
+  flex: 0 0 auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.description-action:hover,
+.description-action:focus-visible {
+  color: var(--text-primary);
+}
+
+.description-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.description-read {
+  --description-font-size: 13px;
+  --description-color: var(--text-primary);
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-secondary);
 }
 
 .task-heading {
@@ -760,45 +812,6 @@ function handleEditorKeydown(event: KeyboardEvent) {
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.registration-heading {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 0 7px;
-  gap: 8px;
-  background: var(--n-color-modal, var(--bg-elevated));
-}
-
-.registration-heading h3 {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.registration-toggle {
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--primary-color);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.registration-toggle:focus-visible { outline: 2px solid var(--focus-ring); }
-.registrations-box {
-  --registration-font-size: 12px;
-  padding: 7px 9px;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-secondary);
 }
 
 .result-readonly {

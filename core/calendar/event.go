@@ -35,7 +35,7 @@ type Event struct {
 	Bold          bool           `json:"bold"`
 	Phase         string         `json:"phase"`
 	Deadline      string         `json:"deadline,omitempty"`
-	Registrations []Registration `json:"registrations,omitempty"`
+	Registrations []Registration `json:"-"`
 	SummaryKey    string         `json:"-"`
 	CreatedAt     time.Time      `json:"createdAt"`
 	UpdatedAt     time.Time      `json:"updatedAt"`

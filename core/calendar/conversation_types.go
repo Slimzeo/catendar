@@ -18,7 +18,7 @@ type ChatChange struct {
 	Phase         string         `json:"phase"`
 	Description   string         `json:"description"`
 	Result        string         `json:"result"`
-	Registrations []Registration `json:"registrations,omitempty"`
+	Registrations []Registration `json:"-"`
 	NeedsReview   bool           `json:"needsReview"`
 	BaseUpdated   string         `json:"baseUpdated"`
 }
@@ -38,4 +38,19 @@ type ChatCounts struct {
 	Updated int `json:"updated"`
 	Pending int `json:"pending"`
 	Skipped int `json:"skipped"`
+}
+
+// DescriptionPreview projects the suggested note only at the UI boundary.
+// Approval still uses the original source-backed change inside its transaction.
+func (activity ChatActivity) DescriptionPreview() ChatActivity {
+	change := activity.Change
+	if change.Description == "" && len(change.Registrations) == 0 {
+		return activity
+	}
+	current := Event{Title: change.Title}
+	if activity.Current != nil {
+		current = *activity.Current
+	}
+	activity.Change.Description = ProjectDescription(current, change, true)
+	return activity
 }
