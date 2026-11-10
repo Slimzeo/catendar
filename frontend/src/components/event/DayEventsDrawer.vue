@@ -57,12 +57,16 @@ function handleEventKeydown(event: KeyboardEvent, calendarEvent: CalendarEvent) 
   <n-drawer
     :show="show"
     :placement="drawerSide"
-    :width="360"
+    :default-width="360"
+    :min-width="240"
+    style="max-width: 100vw"
+    content-class="hide-scrollbar"
+    :theme-overrides="{ resizableTriggerColorHover: 'transparent' }"
     :resizable="true"
     display-directive="show"
     @update:show="value => emit('update:show', value)"
   >
-    <n-drawer-content closable @close="emit('update:show', false)">
+    <n-drawer-content closable body-content-class="hide-scrollbar" @close="emit('update:show', false)">
       <template #header>
         <div class="drawer-header">
           <div>
@@ -113,7 +117,7 @@ function handleEventKeydown(event: KeyboardEvent, calendarEvent: CalendarEvent) 
           <p>Select “Add event” to plan this day.</p>
         </div>
 
-        <div v-else class="events-list">
+        <div v-else class="events-list hide-scrollbar" role="region" aria-label="Day events" tabindex="0">
           <article
             v-for="event in events"
             :key="event.id"

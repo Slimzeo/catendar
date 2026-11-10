@@ -70,6 +70,8 @@ for (const engine of [webkit, chromium]) {
       await drag(4,card(1),{x:30,y:3})
       await ordered('todo',[4,1,2,3])
       assert.equal(await tint(4), firstTint)
+      assert.equal(await card(4).locator('.drag-grip').innerText(), '1')
+      assert.match(await card(1).locator('h3').innerText(), /Priority 2 of 4/)
       assert.equal(await rail(4), originalRail)
       assert.equal(await card(4).getAttribute('data-selected'),'true')
       await ordered('progressing',[5,6])
@@ -111,3 +113,62 @@ for (const engine of [webkit, chromium]) {
     } finally { await browser.close() }
   })
 }
+
+test('exact priority numbers and a distinct first rank are legible in both themes', async () => {
+  const browser = await webkit.launch()
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 680 }, reducedMotion: 'reduce' })
+    await page.addInitScript(seedOrderedBoard)
+    await page.goto(server.resolvedUrls.local[0])
+    await page.evaluate(() => {
+      localStorage.setItem('fixture-rows', JSON.stringify(Array.from({ length: 101 }, (_, index) => ({
+        id: index + 1, title: 'Studio task ' + (index + 1), start: '2026-02-01', phase: index < 100 ? 'todo' : 'done',
+        allDay: true, description: '', result: '', color: '#687386', bold: false
+      }))))
+    })
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => localStorage.setItem('catendar-theme', value), theme)
+      await page.reload()
+      await page.locator('article[data-task-id="100"] .drag-grip').waitFor({ state: 'attached' })
+      const result = await page.evaluate(() => {
+        const column = document.querySelector('section[data-phase="todo"]')
+        const cards = [...column.querySelectorAll('article[data-task-id]')]
+        const badges = cards.map(card => card.querySelector('.drag-grip'))
+        const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+        function luminance(color) {
+          ctx.fillStyle = color
+          ctx.fillRect(0, 0, 1, 1)
+          const values = [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map(v => {
+            const c = v / 255
+            return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+          })
+          return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]
+        }
+        const lightness = y => y > 0.008856 ? 116 * Math.cbrt(y) - 16 : 903.3 * y
+        let minimumStep = Infinity
+        let minimumContrast = Infinity
+        for (const hue of ['#7663b5', '#5968b8', '#3f83b8', '#2f8a8c', '#3d8a70', '#66844f', '#ad762d', '#bd6758', '#ad617d', '#687386']) {
+          column.style.setProperty('--column-hue', hue)
+          const [first, second] = cards.slice(0, 2).map(card => lightness(luminance(getComputedStyle(card).backgroundColor)))
+          minimumStep = Math.min(minimumStep, Math.abs(first - second))
+          for (const badge of badges.slice(0, 2)) {
+            const style = getComputedStyle(badge)
+            const a = luminance(style.backgroundColor), b = luminance(style.color)
+            minimumContrast = Math.min(minimumContrast, (Math.max(a,b) + 0.05) / (Math.min(a,b) + 0.05))
+          }
+        }
+        return {
+          numbers: badges.map(node => node.textContent.trim()),
+          readable: badges.every(node => Number(getComputedStyle(node).opacity) === 1 && node.offsetWidth > 0),
+          doneRank: document.querySelector('section[data-phase="done"] .drag-grip').textContent.trim(),
+          minimumStep, minimumContrast
+        }
+      })
+      assert.deepEqual(result.numbers, Array.from({ length: 100 }, (_, i) => String(i + 1)))
+      assert.equal(result.doneRank, '1')
+      assert.equal(result.readable, true, theme + ' badges require hover')
+      assert.ok(result.minimumStep >= 4, theme + ' first-to-second ΔL* ' + result.minimumStep)
+      assert.ok(result.minimumContrast >= 4.5, theme + ' priority badge contrast ' + result.minimumContrast)
+    }
+  } finally { await browser.close() }
+})

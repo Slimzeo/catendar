@@ -530,20 +530,36 @@ function hasRegistrations(event: CalendarEvent): boolean {
   return Boolean(event.registrations?.length)
 }
 
+// Keep the first two ranks as distinct steps, then fade the remaining cards evenly.
+function priorityStep(
+  index: number,
+  count: number,
+  first: number,
+  second: number,
+  last: number
+): number {
+  if (index === 0) return first
+  const progress = (index - 1) / Math.max(1, count - 2)
+  return second + (last - second) * progress
+}
+
+function rankLabel(index: number, count: number): string {
+  return `Priority ${index + 1} of ${count}`
+}
+
 function cardStyle(
   calendarEvent: CalendarEvent,
   phase: EventPhase,
   index: number,
   count: number
 ): Record<string, string> {
-  const t = count > 1 ? 1 - index / (count - 1) : 0.5
-  const e = Math.pow(t, 1.25)
   const strength = phase === 'done' ? 0.5 : 1
-  const background = (themeStore.isDark ? 3 + 11 * e : 2 + 8 * e) * strength
-  const edge = (themeStore.isDark ? 10 + 30 * e : 12 + 28 * e) * strength
+  const dark = themeStore.isDark
+  const fill = priorityStep(index, count, dark ? 40 : 26, dark ? 17 : 11, dark ? 3 : 2) * strength
+  const edge = priorityStep(index, count, dark ? 55 : 48, dark ? 30 : 26, dark ? 12 : 10) * strength
   return {
     '--event-color': calendarEvent.color,
-    '--priority-fill': `${background.toFixed(2)}%`,
+    '--priority-fill': `${fill.toFixed(2)}%`,
     '--priority-edge': `${edge.toFixed(2)}%`
   }
 }
@@ -842,7 +858,7 @@ defineExpose({
 <template>
   <main
     ref="boardRef"
-    class="board"
+    class="board hide-scrollbar"
     :aria-label="`Tasks for ${calendarStore.dayLabel}`"
     @pointerdown.capture="syncSelectionFromFocus($event.target)"
     @dragend="endDrag"
@@ -887,7 +903,7 @@ defineExpose({
         </div>
       </header>
 
-      <div class="card-list">
+      <div class="card-list hide-scrollbar">
         <article
           v-for="(calendarEvent, index) in column.events"
           :key="calendarEvent.id"
@@ -907,22 +923,20 @@ defineExpose({
           @dragstart="startDrag($event, calendarEvent)"
           @dragend="endDrag"
         >
-          <span
-            aria-hidden="true"
-            class="drag-grip"
-            :draggable="canDragCard(calendarEvent)"
-            title="Drag to reorder"
-            @click.stop
-          >
-            <svg viewBox="0 0 8 14" aria-hidden="true">
-              <circle cx="2" cy="3" r="1" /><circle cx="6" cy="3" r="1" />
-              <circle cx="2" cy="7" r="1" /><circle cx="6" cy="7" r="1" />
-              <circle cx="2" cy="11" r="1" /><circle cx="6" cy="11" r="1" />
-            </svg>
-          </span>
-          <h3 :class="{ bold: calendarEvent.bold }">
-            <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
-          </h3>
+          <div class="card-heading">
+            <span
+              class="drag-grip"
+              :class="{ 'rank-first': index === 0 }"
+              :draggable="canDragCard(calendarEvent)"
+              :title="`${rankLabel(index, column.events.length)}. Drag to reorder`"
+              aria-hidden="true"
+              @click.stop
+            >{{ index + 1 }}</span>
+            <h3 :class="{ bold: calendarEvent.bold }">
+              <span class="sr-only">{{ rankLabel(index, column.events.length) }}. </span>
+              <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
+            </h3>
+          </div>
           <p v-if="calendarEvent.phase === 'done' && calendarEvent.result" class="card-result">
             {{ calendarEvent.result }}
           </p>
@@ -1115,7 +1129,7 @@ defineExpose({
 }
 
 /* Lift the chosen hue against dark card surfaces while preserving its identity. */
-:global([data-theme='dark']) .column {
+[data-theme='dark'] .column {
   --priority-hue: color-mix(in srgb, var(--column-hue) 70%, white);
 }
 
@@ -1210,10 +1224,11 @@ defineExpose({
 }
 
 .card {
+  --priority-stroke: color-mix(in srgb, var(--priority-hue) var(--priority-edge), var(--border-soft));
   position: relative;
-  padding: 8px 10px 8px 22px;
+  padding: 8px 10px 8px 14px;
   border: 1px solid var(--border-soft);
-  border-top: 2px solid color-mix(in srgb, var(--priority-hue) var(--priority-edge), var(--border-soft));
+  border-top: 1px solid var(--priority-stroke);
   border-radius: 9px;
   background-color: color-mix(in srgb, var(--priority-hue) var(--priority-fill), var(--bg-elevated));
   box-shadow: var(--shadow-sm);
@@ -1222,54 +1237,104 @@ defineExpose({
   transition: border-color 140ms ease, background-color 160ms ease, opacity 140ms ease, transform 140ms ease;
 }
 
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.card-heading h3 {
+  min-width: 0;
+  flex: 1;
+}
+
 .card.no-meta {
   padding-right: 94px;
 }
 
 .drag-grip {
-  position: absolute;
-  top: 5px;
-  left: 8px;
-  display: grid;
-  width: 14px;
-  height: 18px;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-tertiary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--priority-hue) 38%, var(--border-strong));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--priority-hue) 10%, var(--bg-elevated));
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
   cursor: grab;
-  opacity: 0;
-  transition: opacity 120ms ease, background-color 120ms ease;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-.drag-grip svg {
-  width: 8px;
-  height: 14px;
-  fill: currentColor;
+/* The first rank is solid; later ranks stay outlined and muted. */
+.drag-grip.rank-first {
+  border-color: color-mix(in srgb, var(--priority-hue) 72%, var(--text-primary));
+  background: color-mix(in srgb, var(--priority-hue) 80%, var(--text-primary));
+  color: #fff;
+  font-weight: 750;
 }
 
-.card:hover .drag-grip,
-.card:focus-within .drag-grip,
-.drag-grip:focus-visible {
-  opacity: 0.62;
+[data-theme='dark'] .drag-grip.rank-first {
+  border-color: color-mix(in srgb, var(--priority-hue) 72%, var(--bg-primary));
+  background: var(--priority-hue);
+  color: var(--bg-primary);
 }
 
 .drag-grip:hover {
-  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--priority-hue) 58%, var(--border-strong));
+  background: color-mix(in srgb, var(--priority-hue) 16%, var(--bg-hover));
   color: var(--text-primary);
 }
 
-.drag-grip:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-  opacity: 1;
+.drag-grip.rank-first:hover {
+  border-color: color-mix(in srgb, var(--priority-hue) 66%, var(--text-primary));
+  background: color-mix(in srgb, var(--priority-hue) 74%, var(--text-primary));
+  color: #fff;
+}
+
+[data-theme='dark'] .drag-grip.rank-first:hover {
+  border-color: color-mix(in srgb, var(--priority-hue) 64%, var(--bg-primary));
+  background: color-mix(in srgb, var(--priority-hue) 86%, var(--text-primary));
+  color: var(--bg-primary);
+}
+
+.card.done .drag-grip {
+  border-color: color-mix(in srgb, var(--priority-hue) 30%, var(--border-soft));
+  background: color-mix(in srgb, var(--priority-hue) 7%, var(--bg-elevated));
+  font-weight: 600;
+}
+
+.card.done .drag-grip.rank-first {
+  border-color: color-mix(in srgb, var(--priority-hue) 46%, var(--border-soft));
+  background: color-mix(in srgb, var(--priority-hue) 20%, var(--bg-elevated));
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.card.done .drag-grip:hover {
+  border-color: color-mix(in srgb, var(--priority-hue) 46%, var(--border-strong));
+  background: color-mix(in srgb, var(--priority-hue) 12%, var(--bg-elevated));
+  color: var(--text-primary);
+}
+
+.card.done .drag-grip.rank-first:hover {
+  background: color-mix(in srgb, var(--priority-hue) 26%, var(--bg-elevated));
+  color: var(--text-primary);
 }
 
 .card.dragging .drag-grip {
   cursor: grabbing;
-  opacity: 0.45;
+  opacity: 0.55;
 }
 
 .drop-line {
@@ -1308,15 +1373,18 @@ defineExpose({
 
 .card:hover {
   border-color: var(--border-strong);
+  border-top-color: var(--priority-stroke);
 }
 
 .card[data-selected='true'] {
   border-color: color-mix(in srgb, var(--primary-color) 52%, var(--border-soft));
-  box-shadow: 0 0 0 1px var(--focus-ring), var(--shadow-sm);
+  border-top-color: var(--priority-stroke);
+  box-shadow: var(--shadow-sm);
 }
 
 .card[data-selected='true']:hover {
   border-color: var(--primary-color);
+  border-top-color: var(--priority-stroke);
 }
 
 .edit-title {
@@ -1345,6 +1413,7 @@ defineExpose({
 }
 
 .card h3 {
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text-primary);

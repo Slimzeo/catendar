@@ -44,6 +44,8 @@ for (const engine of [webkit, chromium]) {
       await page.addInitScript(seedLongTask)
       page.setDefaultTimeout(5000)
       await page.goto(server.resolvedUrls.local[0])
+      // Give native scrollbars a visible width, as when an external mouse is attached.
+      await page.addStyleTag({ content: '*::-webkit-scrollbar { width: 16px; height: 16px; }' })
       const open = page.getByRole('button', {name:'View all 31 activities'})
       const save = page.getByRole('button', {name:'Save task',exact:true})
       for (const [width, height] of [[1000,680], [360,280]]) {
@@ -59,6 +61,29 @@ for (const engine of [webkit, chromium]) {
         }
         await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Activity deadlines')
         await pinned()
+        const body = page.getByRole('region', { name: 'Task details' })
+        const scroll = await body.evaluate(el => {
+          el.scrollTop = 0
+          return {
+            width: el.offsetWidth - el.clientWidth,
+            scrollable: el.scrollHeight > el.clientHeight,
+            hidden: getComputedStyle(el).scrollbarWidth === 'none' ||
+              getComputedStyle(el, '::-webkit-scrollbar').display === 'none'
+          }
+        })
+        assert.deepEqual(scroll, { width: 0, scrollable: true, hidden: true })
+        await body.focus()
+        await page.keyboard.press('PageDown')
+        await page.waitForFunction(() => document.querySelector('.form-body').scrollTop > 20)
+        await body.evaluate(el => { el.scrollTop = 0 })
+        const bounds = await body.boundingBox()
+        await page.mouse.move(bounds.x + bounds.width - 7, bounds.y + 20)
+        await page.mouse.wheel(0, 240)
+        await page.waitForFunction(() => document.querySelector('.form-body').scrollTop > 20)
+        const visibleRails = await body.evaluate(el =>
+          [...el.closest('.n-modal-body-wrapper').querySelectorAll('[data-scrollbar-rail]')]
+            .filter(rail => rail.getClientRects().length > 0).length)
+        assert.equal(visibleRails, 0)
         await last.click()
         assert.equal(await page.evaluate(() => window.openedURLs.at(-1)), 'https://events.example.test/30')
         await pinned()
@@ -82,3 +107,43 @@ for (const engine of [webkit, chromium]) {
     } finally { await browser.close() }
   })
 }
+
+test('the month sidebar scrolls and resizes from an invisible edge', async () => {
+  const browser = await webkit.launch()
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 600 }, reducedMotion: 'reduce' })
+    await page.clock.setFixedTime(new Date(2026, 1, 1, 12))
+    await page.addInitScript(seedLongTask)
+    await page.goto(server.resolvedUrls.local[0])
+    await page.evaluate(() => {
+      window.go.main.CalendarApp.GetEvents = async () => Array.from({ length: 30 }, (_, index) => ({
+        id: index + 1, title: 'Day event ' + (index + 1), start: '2026-02-01',
+        allDay: true, phase: 'todo', color: '#7663b5', description: '', bold: false
+      }))
+    })
+    await page.getByRole('button', { name: 'Month', exact: true }).click()
+    const day = page.getByRole('button', { name: /February 1, 2026, 30 events/ })
+    await day.focus()
+    await page.keyboard.press('Enter')
+    const list = page.getByRole('region', { name: 'Day events' })
+    await list.waitFor()
+    assert.equal(await list.evaluate(el => getComputedStyle(el).scrollbarWidth === 'none' ||
+      getComputedStyle(el, '::-webkit-scrollbar').display === 'none'), true)
+    await list.focus()
+    await page.keyboard.press('PageDown')
+    await page.waitForFunction(() => document.querySelector('.events-list').scrollTop > 0)
+    const panel = page.locator('.n-drawer').filter({has:list})
+    const edge = panel.locator('.n-drawer__resize-trigger')
+    await edge.hover()
+    const edgeStyle = await edge.evaluate(el => getComputedStyle(el).backgroundColor)
+    assert.match(edgeStyle, /transparent|rgba\(0, 0, 0, 0\)/)
+    const [initial, handle] = await Promise.all([panel.boundingBox(), edge.boundingBox()])
+    const x = handle.x + handle.width / 2
+    const y = handle.y + handle.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 56, y, { steps: 4 })
+    await page.mouse.up()
+    await page.waitForFunction(w => document.querySelector('.n-drawer').getBoundingClientRect().width >= w + 40, initial.width)
+  } finally { await browser.close() }
+})
