@@ -1137,3 +1137,32 @@ func TestChatProtectsManualClearsPhaseAndTitle(t *testing.T) {
 		})
 	}
 }
+
+func TestOnePlanAddsIndependentRegistrationListsToOneExistingCard(t *testing.T) {
+	s := testService(t)
+	ctx := context.Background()
+	now := boardTestTime(2026, time.March, 2)
+	s.now = func() time.Time { return now }
+	day := "2026-03-02"
+	card, err := s.CreateEvent(ctx, EventInput{Title: "Spring events", Start: day + "T00:00:00"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"list-a", "list-b"}
+	changes := make([]ChatChange, 0, len(ids))
+	for _, id := range ids {
+		changes = append(changes, ChatChange{Source: chatTestEvidence(id, "survey-thread", id, now), Title: card.Title, TaskKey: "spring-events", EventID: card.ID, BaseUpdated: card.UpdatedAt.Format(time.RFC3339Nano), Registrations: []Registration{{Name: id, URL: "https://events.example/" + id}}})
+	}
+	counts, err := s.ApplyChatPlan(ctx, day, ids, changes)
+	if err != nil || counts.Updated != 2 || counts.Pending != 0 {
+		t.Fatalf("multi-source update: %+v, %v", counts, err)
+	}
+	onBoard, err := s.GetBoardEvents(ctx, day)
+	if err != nil || len(onBoard) != 1 || len(onBoard[0].Registrations) != 2 || onBoard[0].Phase != card.Phase {
+		t.Fatal("survey details or card identity lost")
+	}
+	counts, err = s.ApplyChatPlan(ctx, day, ids, changes)
+	if err != nil || counts.Skipped != 2 {
+		t.Fatalf("replayed lists: %+v, %v", counts, err)
+	}
+}

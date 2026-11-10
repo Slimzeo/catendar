@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { EventRegistration } from '@/types'
-import { registrationDeadline, safeRegistrationUrl } from '@/utils/registrations'
+import { orderedRegistrations, safeRegistrationUrl } from '@/utils/registrations'
+import { useCalendarStore } from '@/stores/calendar'
 import { openExternal } from '@/wails'
 
 const props = withDefaults(defineProps<{
@@ -14,21 +15,18 @@ const props = withDefaults(defineProps<{
   context: ''
 })
 
+const emit = defineEmits<{ (event: 'show-all'): void }>()
+const calendar = useCalendarStore()
 const compactLimit = 3
-
+const activities = computed(() => orderedRegistrations(props.registrations, calendar.focusedDate))
 const rows = computed(() => {
-  const registrations = props.registrations.filter(item => item && item.name)
-  const visible = props.compact ? registrations.slice(0, compactLimit) : registrations
+  const visible = props.compact ? activities.value.slice(0, compactLimit) : activities.value
   return visible.map(registration => ({
     registration,
     url: safeRegistrationUrl(registration.url),
-    deadline: registrationDeadline(registration)
+    registrationDue: registration.deadlineText || registration.deadline,
+    submissionDue: registration.submissionDeadlineText || registration.submissionDeadline
   }))
-})
-
-const hiddenCount = computed(() => {
-  if (!props.compact) return 0
-  return Math.max(0, props.registrations.filter(item => item && item.name).length - compactLimit)
 })
 
 const label = computed(() => (
@@ -58,15 +56,15 @@ function openRegistration(url: string | undefined) {
         </svg>
       </a>
       <span v-else class="registration-name">{{ row.registration.name }}</span>
-      <span
-        class="registration-deadline"
-        :class="{ unknown: !row.deadline }"
-        :title="row.deadline || 'Deadline unknown'"
-      >
-        {{ row.deadline ? `Due ${row.deadline}` : 'Deadline unknown' }}
+      <span class="registration-times">
+        <span v-if="row.registrationDue" class="registration-deadline" :title="row.registrationDue">Registration · {{ row.registrationDue }}</span>
+        <span v-if="row.submissionDue" class="registration-deadline" :title="row.submissionDue">Submission · {{ row.submissionDue }}</span>
+        <span v-if="!row.registrationDue && !row.submissionDue" class="registration-deadline unknown">Deadline unknown</span>
       </span>
     </li>
-    <li v-if="hiddenCount" class="registration-more">+{{ hiddenCount }} more in the editor</li>
+    <li v-if="props.compact && activities.length > compactLimit">
+      <button type="button" class="registration-more" @click.stop="emit('show-all')">View all {{ activities.length }} activities</button>
+    </li>
   </ul>
 </template>
 
@@ -132,10 +130,18 @@ function openRegistration(url: string | undefined) {
   opacity: 0.7;
 }
 
-.registration-deadline {
+.registration-times {
+  display: flex;
+  flex-direction: column;
   margin-left: auto;
-  min-width: 0;
   max-width: 60%;
+  min-width: 0;
+  align-items: flex-end;
+}
+
+.registration-deadline {
+  min-width: 0;
+  max-width: 100%;
   flex: 0 1 auto;
   overflow: hidden;
   color: var(--text-tertiary);
@@ -162,6 +168,7 @@ function openRegistration(url: string | undefined) {
   white-space: normal;
 }
 
+.registrations:not(.compact) .registration-times,
 .registrations:not(.compact) .registration-deadline {
   max-width: 100%;
   overflow: visible;
@@ -171,7 +178,13 @@ function openRegistration(url: string | undefined) {
 }
 
 .registration-more {
-  color: var(--text-tertiary);
+  appearance: none;
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: var(--primary-color);
+  cursor: pointer;
   font-size: calc(var(--registration-font-size, 11.5px) - 1px);
 }
 </style>

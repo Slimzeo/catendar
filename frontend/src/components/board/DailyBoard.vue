@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
 import { useMessage } from 'naive-ui'
 import type { ShortcutAction } from '@/shortcuts'
-import type { CalendarEvent, EventInput, EventPhase } from '@/types'
+import type { EventEditField, CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases, isEventPhase } from '@/constants/eventPhases'
 import { useCalendarStore } from '@/stores/calendar'
 import { useEventsStore } from '@/stores/events'
@@ -14,7 +14,7 @@ import EventDescription from '@/components/event/EventDescription.vue'
 import EventRegistrations from '@/components/event/EventRegistrations.vue'
 
 const emit = defineEmits<{
-  (event: 'edit', calendarEvent: CalendarEvent, focus?: 'title' | 'description' | 'result'): void
+  (event: 'edit', calendarEvent: CalendarEvent, focus?: EventEditField): void
   (event: 'request-delete', calendarEvent: CalendarEvent): void
   (event: 'create-details', phase: EventPhase, title: string): void
   (event: 'open-email', sourceURL: string): void
@@ -689,6 +689,7 @@ defineExpose({
             @open-email="sourceURL => emit('open-email', sourceURL)"
           />
           <event-registrations
+            @show-all="selectEvent(calendarEvent); emit('edit', calendarEvent, 'registrations')"
             v-if="hasRegistrations(calendarEvent)"
             class="card-registrations"
             :registrations="calendarEvent.registrations"

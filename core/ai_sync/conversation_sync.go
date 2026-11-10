@@ -271,7 +271,7 @@ func (s *ConversationSync) run(ctx context.Context, configuredPath string, now t
 	return "Codex conversations synced.", nil
 }
 
-func (s *ConversationSync) applyConversationBatch(ctx context.Context, binary, day string, batch []conversations.Message, targets map[int64]bool, label string) error {
+func (s *ConversationSync) applyConversationBatch(ctx context.Context, binary, day string, batch []conversations.Message, targets *registrationTargets, label string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -283,13 +283,13 @@ func (s *ConversationSync) applyConversationBatch(ctx context.Context, binary, d
 		return err
 	}
 	if targets != nil {
-		linked := make([]calendar.Event, 0, len(targets))
+		linked := make([]calendar.Event, 0)
 		for _, e := range cards {
-			if targets[e.ID] && e.Phase != calendar.PhaseDone {
+			if e.Phase != calendar.PhaseDone && (targets.ids[e.ID] || targets.discovery && registrationTopic(e)) {
 				linked = append(linked, e)
 			}
 		}
-		if len(linked) == 0 {
+		if len(linked) == 0 && !targets.discovery {
 			return nil
 		}
 		cards = linked
@@ -317,7 +317,7 @@ func (s *ConversationSync) applyConversationBatch(ctx context.Context, binary, d
 		}
 	}
 	if targets != nil {
-		changes = registrationChanges(changes, cards)
+		changes = registrationChanges(changes, cards, targets.discovery && len(cards) == 0)
 	}
 	if s.now().Format("2006-01-02") != day {
 		return errors.New("the local day changed; sync again for today's board")
@@ -344,10 +344,15 @@ func conversationBatches(messages []conversations.Message, unseen map[string]boo
 	var batch []conversations.Message
 	size := 0
 	previous := make(map[string]conversations.Message)
+	survey := make(map[string]conversations.Message)
 	resources := make(map[string][]conversations.Message)
 	inBatch := make(map[string]bool)
 	for _, m := range messages {
 		prior := previous[m.ThreadID]
+		inquiry := survey[m.ThreadID]
+		if m.Role == conversations.RoleUser && isEventSurvey(m.Text) {
+			survey[m.ThreadID] = m
+		}
 		previous[m.ThreadID] = m
 		earlierResources := resources[m.ThreadID]
 		if isRegistrationEvidence(m.Text) {
@@ -365,7 +370,13 @@ func conversationBatches(messages []conversations.Message, unseen map[string]boo
 			batches = append(batches, batch)
 			batch, size, inBatch = nil, 0, make(map[string]bool)
 		}
-		if isRegistrationFollowup(m.Text) {
+		if inquiry.ID != "" && inquiry.ID != prior.ID && !inBatch[inquiry.ID] && isRegistrationEvidence(m.Text) && len(batch) < 21 && size+len(inquiry.Text)+len(prior.Text)+len(m.Text) <= 48000 {
+			inquiry.ContextOnly = true
+			batch = append(batch, inquiry)
+			size += len(inquiry.Text)
+			inBatch[inquiry.ID] = true
+		}
+		if isRegistrationFollowup(m.Text) || isEventSurvey(m.Text) {
 			// An earlier list can already be checkpointed when the user later picks a specific application. Supply only bounded, same-thread resource messages as context.
 			for _, evidence := range earlierResources {
 				if evidence.ID == prior.ID || inBatch[evidence.ID] || len(batch) >= 21 || size+len(evidence.Text)+len(prior.Text)+len(m.Text) > 48000 {

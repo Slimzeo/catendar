@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { format, parseISO } from 'date-fns'
 import { NButton, NCard, NDatePicker, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
-import type { CalendarEvent, EventInput, EventPhase } from '@/types'
+import type { EventEditField, CalendarEvent, EventInput, EventPhase } from '@/types'
 import { eventPhases } from '@/constants/eventPhases'
 import ColorPalettePicker from './ColorPalettePicker.vue'
 import EventRegistrations from './EventRegistrations.vue'
@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   defaultTitle?: string
   defaultColor: string
   defaultPhase?: EventPhase
-  initialFocus?: 'title' | 'description' | 'result'
+  initialFocus?: EventEditField
   variant?: 'board' | 'calendar'
   saving?: boolean
 }>(), {
@@ -57,6 +57,7 @@ const phaseOptions = eventPhases.map(value => ({ label: value, value }))
 
 const isEditing = computed(() => Boolean(props.event?.id))
 const isTask = computed(() => props.variant === 'board')
+const registrationDetails = ref<HTMLElement | null>(null)
 const registrations = computed(() => props.event?.registrations ?? [])
 const modalTitle = computed(() => {
   if (isTask.value) return isEditing.value ? 'Edit task' : 'New task'
@@ -82,7 +83,9 @@ watch(
     if (!show) return
     initializeForm()
     nextTick(() => {
-      if (props.initialFocus === 'description') {
+      if (props.initialFocus === 'registrations' && registrationDetails.value) {
+        registrationDetails.value.focus()
+      } else if (props.initialFocus === 'description') {
         descriptionInputRef.value?.focus()
       } else if (props.initialFocus === 'result' && phase.value === 'progressing') {
         resultInputRef.value?.focus()
@@ -285,7 +288,7 @@ function handleSave() {
 
         <div v-if="isEditing && registrations.length" class="form-group registrations-field">
           <label>Registrations <span class="optional">{{ registrations.length }}</span></label>
-          <div class="registrations-box">
+          <div ref="registrationDetails" class="registrations-box" role="group" aria-label="Activity deadlines" tabindex="-1">
             <event-registrations :registrations="registrations" :context="title" />
           </div>
         </div>

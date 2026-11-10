@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { EventEditField } from '@/types'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { format } from 'date-fns'
 import { NButton, useMessage } from 'naive-ui'
@@ -38,7 +39,7 @@ const defaultPhase = ref<EventPhase>('todo')
 const modalVariant = ref<'board' | 'calendar'>('calendar')
 const modalBoardDay = ref('')
 const savingEvent = ref(false)
-const initialField = ref<'title' | 'description' | 'result'>('title')
+const initialField = ref<EventEditField>('title')
 const board = ref<InstanceType<typeof DailyBoard> | null>(null)
 const boardQuickActive = ref(false)
 const pendingDelete = ref<CalendarEvent | null>(null)
@@ -133,7 +134,7 @@ function openCreateDetails(phase: EventPhase, title: string) {
   openCreateModal(calendarStore.focusedDate, phase, title)
 }
 
-function openEditModal(event: CalendarEvent, focus: 'title' | 'description' | 'result' = 'title') {
+function openEditModal(event: CalendarEvent, focus: EventEditField = 'title') {
   showDayDrawer.value = false
   editingEvent.value = event
   defaultDate.value = ''

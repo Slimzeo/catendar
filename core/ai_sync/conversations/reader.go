@@ -862,7 +862,7 @@ func appendPublicMessage(
 		ThreadTitle: title,
 		Project:     project,
 		Role:        role,
-		Text:        truncateUTF8(text, maxMessageBytes),
+		Text:        plannerMessageText(text),
 		At:          at,
 	})
 }

@@ -240,6 +240,8 @@ export namespace calendar {
 	    url?: string;
 	    deadline?: string;
 	    deadlineText?: string;
+	    submissionDeadline?: string;
+	    submissionDeadlineText?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new Registration(source);
@@ -251,6 +253,8 @@ export namespace calendar {
 	        this.url = source["url"];
 	        this.deadline = source["deadline"];
 	        this.deadlineText = source["deadlineText"];
+	        this.submissionDeadline = source["submissionDeadline"];
+	        this.submissionDeadlineText = source["submissionDeadlineText"];
 	    }
 	}
 	export class Event {
