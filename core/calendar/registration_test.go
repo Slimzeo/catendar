@@ -9,20 +9,20 @@ import (
 	"time"
 )
 
-func TestRegistrationJSONFieldNames(t *testing.T) {
-	payload, err := json.Marshal(Event{Registrations: []Registration{{
+func TestRegistrationEvidenceStaysOutOfPublicJSON(t *testing.T) {
+	registration := Registration{
 		Name:                   "考试报名",
 		URL:                    "https://example.com/apply",
 		Deadline:               "2026-03-10",
 		DeadlineText:           "截止 17:00",
 		SubmissionDeadline:     "2026-03-20",
 		SubmissionDeadlineText: "提交截止 23:59",
-	}}})
+	}
+	payload, err := json.Marshal(registration)
 	if err != nil {
-		t.Fatalf("encode event: %v", err)
+		t.Fatalf("encode registration: %v", err)
 	}
 	for _, want := range []string{
-		`"registrations":[`,
 		`"name":"考试报名"`,
 		`"url":"https://example.com/apply"`,
 		`"deadline":"2026-03-10"`,
@@ -31,7 +31,19 @@ func TestRegistrationJSONFieldNames(t *testing.T) {
 		`"submissionDeadlineText":"提交截止 23:59"`,
 	} {
 		if !strings.Contains(string(payload), want) {
-			t.Fatalf("event JSON %s is missing %s", payload, want)
+			t.Fatalf("registration JSON %s is missing %s", payload, want)
+		}
+	}
+	for name, value := range map[string]any{
+		"event":  Event{Registrations: []Registration{registration}},
+		"change": ChatChange{Registrations: []Registration{registration}},
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("encode %s: %v", name, err)
+		}
+		if strings.Contains(string(encoded), `"registrations"`) || strings.Contains(string(encoded), "example.com/apply") {
+			t.Fatalf("%s JSON exposes verified evidence: %s", name, encoded)
 		}
 	}
 }
@@ -106,8 +118,9 @@ func TestChatRegistrationsFillActionDetailsWithoutFlatteningDescription(t *testi
 	if err != nil {
 		t.Fatalf("read task: %v", err)
 	}
-	if event.Description != created.Description {
-		t.Fatalf("registration update flattened the description: %q", event.Description)
+	wantDescription := created.Description + "\n\n" + FormatRegistrationBlock(created.Title, first.Registrations[0])
+	if event.Description != wantDescription {
+		t.Fatalf("registration details were not added as ordinary text:\n%s", event.Description)
 	}
 	if len(event.Registrations) != 1 || event.Registrations[0] != first.Registrations[0] {
 		t.Fatalf("registrations = %#v", event.Registrations)
@@ -137,7 +150,8 @@ func TestChatRegistrationsFillActionDetailsWithoutFlatteningDescription(t *testi
 	if event.Registrations[0].Name != "Exam portal" || event.Registrations[1].Name != "Housing" {
 		t.Fatalf("registration order = %#v", event.Registrations)
 	}
-	if event.Description != created.Description || event.Deadline != "2026-03-10" {
+	wantDescription += "\n\n" + FormatRegistrationBlock(created.Title, extra.Registrations[0])
+	if event.Description != wantDescription || event.Deadline != "2026-03-10" {
 		t.Fatalf("unrelated update changed existing details: %#v", event)
 	}
 
@@ -171,7 +185,8 @@ func TestChatRegistrationsFillActionDetailsWithoutFlatteningDescription(t *testi
 		t.Fatalf("action-only update after manual description: counts=%#v err=%v", counts, err)
 	}
 	event, err = eventByID(ctx, service.db, created.ID)
-	if err != nil || len(event.Registrations) != 3 || event.Description != "edited macro summary" {
+	badgeDescription := "edited macro summary\n\n" + FormatRegistrationBlock(created.Title, actionOnly.Registrations[0])
+	if err != nil || len(event.Registrations) != 3 || event.Description != badgeDescription {
 		t.Fatalf("manual description blocked action details: %#v err=%v", event, err)
 	}
 	blank := eventTestInput(event)
@@ -190,6 +205,9 @@ func TestChatRegistrationsFillActionDetailsWithoutFlatteningDescription(t *testi
 	event, err = eventByID(ctx, service.db, created.ID)
 	if err != nil || event.Deadline != "" {
 		t.Fatalf("duplicate details refilled a manually cleared deadline: %#v err=%v", event, err)
+	}
+	if event.Description != badgeDescription {
+		t.Fatalf("repeating old evidence restored deleted details:\n%s", event.Description)
 	}
 }
 

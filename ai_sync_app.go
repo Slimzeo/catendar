@@ -42,10 +42,22 @@ func (a *AISyncApp) SaveConversationSyncSettings(codexPath string) (ai_sync.Conv
 	return a.conversations.SaveSettings(context.Background(), codexPath)
 }
 func (a *AISyncApp) GetConversationActivity() ([]calendar.ChatActivity, error) {
-	return a.conversations.Activity(context.Background())
+	activities, err := a.conversations.Activity(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	for i := range activities {
+		activities[i] = activities[i].DescriptionPreview()
+	}
+	return activities, nil
 }
 func (a *AISyncApp) ResolveConversationChange(id int64, accept bool) (*calendar.ChatActivity, error) {
-	return a.conversations.Resolve(context.Background(), id, accept)
+	activity, err := a.conversations.Resolve(context.Background(), id, accept)
+	if err != nil || activity == nil {
+		return activity, err
+	}
+	preview := activity.DescriptionPreview()
+	return &preview, nil
 }
 
 func (a *AISyncApp) GetAISyncSetup() (*AISyncSetup, error) {

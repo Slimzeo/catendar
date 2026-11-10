@@ -11,7 +11,6 @@ import { useThemeStore } from '@/stores/theme'
 import { useSyncSourcesStore } from '@/stores/syncSources'
 import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
-import EventRegistrations from '@/components/event/EventRegistrations.vue'
 import ColumnColorPicker from '@/components/board/ColumnColorPicker.vue'
 
 const emit = defineEmits<{
@@ -271,15 +270,18 @@ function isAppDrag(): boolean {
   return draggingId.value != null
 }
 
+const dragControlSelector = 'a, button, input, label, select, textarea, [contenteditable="true"]'
+
+// The title is both the primary click target and a drag origin; every other control keeps
+// its native click behaviour instead of starting a card drag.
+function blockedDragControl(element: Element | null): Element | null {
+  const control = element?.closest(dragControlSelector) ?? null
+  return control && !control.closest('.edit-title') ? control : null
+}
+
 function noteCardPointerDown(event: PointerEvent) {
   const target = event.target instanceof Element ? event.target : null
-  if (target?.closest('.drag-grip')) {
-    dragControlTarget = null
-    return
-  }
-  dragControlTarget = target?.closest(
-    'a, button, input, label, select, textarea, [contenteditable="true"]'
-  ) ?? null
+  dragControlTarget = blockedDragControl(target)
 }
 
 function startDrag(event: DragEvent, calendarEvent: CalendarEvent) {
@@ -293,8 +295,7 @@ function startDrag(event: DragEvent, calendarEvent: CalendarEvent) {
     return
   }
   const target = event.target instanceof Element ? event.target : null
-  const control = target?.closest('a, button, input, label, select, textarea, [contenteditable="true"]')
-  if (control && !control.closest('.drag-grip')) {
+  if (blockedDragControl(target)) {
     event.preventDefault()
     return
   }
@@ -526,41 +527,21 @@ function hasMeta(event: CalendarEvent): boolean {
   return Boolean((themeStore.showTime && eventTime(event)) || event.deadline || mailUrl(event))
 }
 
-function hasRegistrations(event: CalendarEvent): boolean {
-  return Boolean(event.registrations?.length)
-}
-
-// Keep the first two ranks as distinct steps, then fade the remaining cards evenly.
-function priorityStep(
-  index: number,
-  count: number,
-  first: number,
-  second: number,
-  last: number
-): number {
-  if (index === 0) return first
-  const progress = (index - 1) / Math.max(1, count - 2)
-  return second + (last - second) * progress
-}
-
-function rankLabel(index: number, count: number): string {
-  return `Priority ${index + 1} of ${count}`
-}
-
+// Tint the whole card surface by position: 54% of the column hue on the first card,
+// fading linearly to 4% on the last. A lone card keeps the strongest tint, and done
+// cards use a slightly quieter scale while still graduating.
 function cardStyle(
   calendarEvent: CalendarEvent,
   phase: EventPhase,
   index: number,
   count: number
 ): Record<string, string> {
-  const strength = phase === 'done' ? 0.5 : 1
-  const dark = themeStore.isDark
-  const fill = priorityStep(index, count, dark ? 40 : 26, dark ? 17 : 11, dark ? 3 : 2) * strength
-  const edge = priorityStep(index, count, dark ? 55 : 48, dark ? 30 : 26, dark ? 12 : 10) * strength
+  const position = 1 - index / Math.max(1, count - 1)
+  const scale = phase === 'done' ? 0.8 : 1
+  const tint = (4 + 50 * position) * scale
   return {
     '--event-color': calendarEvent.color,
-    '--priority-fill': `${fill.toFixed(2)}%`,
-    '--priority-edge': `${edge.toFixed(2)}%`
+    '--card-tint': `${tint.toFixed(2)}%`
   }
 }
 
@@ -911,7 +892,7 @@ defineExpose({
           :class="{
             done: calendarEvent.phase === 'done',
             dragging: draggingId === calendarEvent.id,
-            'no-meta': !hasMeta(calendarEvent) && !hasRegistrations(calendarEvent)
+            'no-meta': !hasMeta(calendarEvent)
           }"
           :style="cardStyle(calendarEvent, column.phase, index, column.events.length)"
           :data-task-id="calendarEvent.id"
@@ -923,20 +904,15 @@ defineExpose({
           @dragstart="startDrag($event, calendarEvent)"
           @dragend="endDrag"
         >
-          <div class="card-heading">
-            <span
-              class="drag-grip"
-              :class="{ 'rank-first': index === 0 }"
+          <h3 :class="{ bold: calendarEvent.bold }">
+            <button
+              type="button"
+              class="edit-title"
+              tabindex="0"
               :draggable="canDragCard(calendarEvent)"
-              :title="`${rankLabel(index, column.events.length)}. Drag to reorder`"
-              aria-hidden="true"
-              @click.stop
-            >{{ index + 1 }}</span>
-            <h3 :class="{ bold: calendarEvent.bold }">
-              <span class="sr-only">{{ rankLabel(index, column.events.length) }}. </span>
-              <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
-            </h3>
-          </div>
+              @click.stop="openEvent(calendarEvent)"
+            >{{ calendarEvent.title }}</button>
+          </h3>
           <p v-if="calendarEvent.phase === 'done' && calendarEvent.result" class="card-result">
             {{ calendarEvent.result }}
           </p>
@@ -946,14 +922,6 @@ defineExpose({
             :text="cardDescription(calendarEvent)"
             :clamp="2"
             @open-email="sourceURL => emit('open-email', sourceURL)"
-          />
-          <event-registrations
-            @show-all="selectEvent(calendarEvent); emit('edit', calendarEvent, 'registrations')"
-            v-if="hasRegistrations(calendarEvent)"
-            class="card-registrations"
-            :registrations="calendarEvent.registrations"
-            :context="calendarEvent.title"
-            compact
           />
           <button
             v-if="calendarEvent.phase === 'progressing'"
@@ -980,7 +948,7 @@ defineExpose({
                 <svg viewBox="0 0 20 20" aria-hidden="true">
                   <path d="M5 17V3.5h9l-1.8 3.2L14 10H5" />
                 </svg>
-                {{ hasRegistrations(calendarEvent) ? 'Task due' : 'Due' }} {{ deadlineLabel(calendarEvent.deadline) }}
+                Due {{ deadlineLabel(calendarEvent.deadline) }}
               </span>
               <button
                 v-if="mailUrl(calendarEvent)"
@@ -1118,7 +1086,9 @@ defineExpose({
 }
 
 .column {
-  --priority-hue: var(--column-hue);
+  --card-hue: var(--column-hue);
+  --card-text-secondary: color-mix(in oklab, var(--text-primary) 76%, var(--text-secondary));
+  --card-text-tertiary: color-mix(in oklab, var(--text-primary) 70%, var(--text-tertiary));
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -1130,7 +1100,9 @@ defineExpose({
 
 /* Lift the chosen hue against dark card surfaces while preserving its identity. */
 [data-theme='dark'] .column {
-  --priority-hue: color-mix(in srgb, var(--column-hue) 70%, white);
+  --card-hue: color-mix(in oklab, var(--column-hue) 70%, white);
+  --card-text-secondary: color-mix(in oklab, var(--text-primary) 70%, white);
+  --card-text-tertiary: color-mix(in oklab, var(--text-secondary) 20%, white);
 }
 
 .column[data-active='true'] {
@@ -1224,117 +1196,28 @@ defineExpose({
 }
 
 .card {
-  --priority-stroke: color-mix(in srgb, var(--priority-hue) var(--priority-edge), var(--border-soft));
+  --description-link-color: var(--card-text-secondary);
+  --text-secondary: var(--card-text-secondary);
+  --text-tertiary: var(--card-text-tertiary);
   position: relative;
   padding: 8px 10px 8px 14px;
   border: 1px solid var(--border-soft);
-  border-top: 1px solid var(--priority-stroke);
   border-radius: 9px;
-  background-color: color-mix(in srgb, var(--priority-hue) var(--priority-fill), var(--bg-elevated));
+  background-color: color-mix(in oklab, var(--card-hue) var(--card-tint), var(--bg-elevated));
   box-shadow: var(--shadow-sm);
   cursor: pointer;
   outline: 0;
   transition: border-color 140ms ease, background-color 160ms ease, opacity 140ms ease, transform 140ms ease;
 }
 
-.card-heading {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-}
-
-.card-heading h3 {
-  min-width: 0;
-  flex: 1;
+/* WebKit otherwise may refuse to start a drag from the title button. */
+.card[draggable='true'],
+.card[draggable='true'] .edit-title {
+  -webkit-user-drag: element;
 }
 
 .card.no-meta {
   padding-right: 94px;
-}
-
-.drag-grip {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 4px;
-  border: 1px solid color-mix(in srgb, var(--priority-hue) 38%, var(--border-strong));
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--priority-hue) 10%, var(--bg-elevated));
-  color: var(--text-secondary);
-  font-family: var(--font-body);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: grab;
-  user-select: none;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-/* The first rank is solid; later ranks stay outlined and muted. */
-.drag-grip.rank-first {
-  border-color: color-mix(in srgb, var(--priority-hue) 72%, var(--text-primary));
-  background: color-mix(in srgb, var(--priority-hue) 80%, var(--text-primary));
-  color: #fff;
-  font-weight: 750;
-}
-
-[data-theme='dark'] .drag-grip.rank-first {
-  border-color: color-mix(in srgb, var(--priority-hue) 72%, var(--bg-primary));
-  background: var(--priority-hue);
-  color: var(--bg-primary);
-}
-
-.drag-grip:hover {
-  border-color: color-mix(in srgb, var(--priority-hue) 58%, var(--border-strong));
-  background: color-mix(in srgb, var(--priority-hue) 16%, var(--bg-hover));
-  color: var(--text-primary);
-}
-
-.drag-grip.rank-first:hover {
-  border-color: color-mix(in srgb, var(--priority-hue) 66%, var(--text-primary));
-  background: color-mix(in srgb, var(--priority-hue) 74%, var(--text-primary));
-  color: #fff;
-}
-
-[data-theme='dark'] .drag-grip.rank-first:hover {
-  border-color: color-mix(in srgb, var(--priority-hue) 64%, var(--bg-primary));
-  background: color-mix(in srgb, var(--priority-hue) 86%, var(--text-primary));
-  color: var(--bg-primary);
-}
-
-.card.done .drag-grip {
-  border-color: color-mix(in srgb, var(--priority-hue) 30%, var(--border-soft));
-  background: color-mix(in srgb, var(--priority-hue) 7%, var(--bg-elevated));
-  font-weight: 600;
-}
-
-.card.done .drag-grip.rank-first {
-  border-color: color-mix(in srgb, var(--priority-hue) 46%, var(--border-soft));
-  background: color-mix(in srgb, var(--priority-hue) 20%, var(--bg-elevated));
-  color: var(--text-primary);
-  font-weight: 650;
-}
-
-.card.done .drag-grip:hover {
-  border-color: color-mix(in srgb, var(--priority-hue) 46%, var(--border-strong));
-  background: color-mix(in srgb, var(--priority-hue) 12%, var(--bg-elevated));
-  color: var(--text-primary);
-}
-
-.card.done .drag-grip.rank-first:hover {
-  background: color-mix(in srgb, var(--priority-hue) 26%, var(--bg-elevated));
-  color: var(--text-primary);
-}
-
-.card.dragging .drag-grip {
-  cursor: grabbing;
-  opacity: 0.55;
 }
 
 .drop-line {
@@ -1344,7 +1227,7 @@ defineExpose({
   z-index: 4;
   height: 2px;
   border-radius: 1px;
-  background: var(--priority-hue);
+  background: var(--card-hue);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--column-hue) 22%, transparent);
   pointer-events: none;
 }
@@ -1355,10 +1238,9 @@ defineExpose({
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--priority-hue);
+  background: var(--card-hue);
   content: '';
 }
-
 
 .card::before {
   position: absolute;
@@ -1373,18 +1255,15 @@ defineExpose({
 
 .card:hover {
   border-color: var(--border-strong);
-  border-top-color: var(--priority-stroke);
 }
 
 .card[data-selected='true'] {
   border-color: color-mix(in srgb, var(--primary-color) 52%, var(--border-soft));
-  border-top-color: var(--priority-stroke);
   box-shadow: var(--shadow-sm);
 }
 
 .card[data-selected='true']:hover {
   border-color: var(--primary-color);
-  border-top-color: var(--priority-stroke);
 }
 
 .edit-title {
@@ -1436,11 +1315,6 @@ defineExpose({
   margin-top: 2px;
   font-size: 12.5px;
   -webkit-line-clamp: 2;
-}
-
-.card-registrations {
-  --registration-font-size: 11px;
-  margin-top: 4px;
 }
 
 .card-result {
@@ -1845,8 +1719,7 @@ defineExpose({
 
 @media (prefers-reduced-motion: reduce) {
   .column,
-  .card,
-  .drag-grip {
+  .card {
     transition: none;
   }
 }

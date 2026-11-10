@@ -1,15 +1,6 @@
 export type EventPhase = 'todo' | 'progressing' | 'done'
 
-export type EventEditField = 'title' | 'description' | 'result' | 'registrations'
-
-export interface EventRegistration {
-  name: string
-  url?: string
-  deadline?: string
-  deadlineText?: string
-  submissionDeadline?: string
-  submissionDeadlineText?: string
-}
+export type EventEditField = 'title' | 'description' | 'result'
 
 export interface CalendarEvent {
   id: number
@@ -23,7 +14,6 @@ export interface CalendarEvent {
   bold: boolean
   phase: EventPhase
   deadline?: string
-  registrations?: EventRegistration[]
   createdAt: string
   updatedAt: string
 }
@@ -155,7 +145,6 @@ export interface ChatChange {
   phase: EventPhase
   description: string
   result: string
-  registrations?: EventRegistration[]
   needsReview: boolean
   baseUpdated: string
 }

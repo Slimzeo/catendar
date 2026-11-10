@@ -335,7 +335,7 @@ function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin:
   if (target instanceof Element && target.closest('.column-color-picker[data-open="true"]')) return false
   if (event.target instanceof Element && event.target.closest('.column-color-picker[data-open="true"]')) return false
 
-  if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"], a[data-registration-link]')) {
+  if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"], .event-description a')) {
     return false
   }
   if (event.repeat && !repeatable.has(action)) return true
@@ -505,6 +505,7 @@ onUnmounted(() => {
       :initial-focus="initialField"
       :variant="modalVariant"
       :saving="savingEvent"
+      @open-email="openSourceEmail"
       @save="handleSave"
       @request-delete="requestDelete"
     />
@@ -525,6 +526,7 @@ onUnmounted(() => {
       :syncing="isAISyncing"
       :email-status="aiSyncStatus"
       @saved="showAISyncStatus = false"
+      @open-email="openSourceEmail"
       @email-sync="startAISync"
       @cancel-email-sync="cancelAISync"
     />

@@ -105,6 +105,11 @@ func SeedBoard(ctx context.Context, db *sql.DB, now time.Time) error {
 	if err := ensureRegistrationColumns(ctx, tx); err != nil {
 		return err
 	}
+	// Existing cards and historical snapshots gain their editable details even
+	// when the board itself was seeded by an older version.
+	if err := upgradeRegistrationDescriptions(ctx, tx, now.Format(dateLayout)); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO board_meta (id, seeded_at) VALUES (1, ?)", now)
 	if err != nil {
 		return err
