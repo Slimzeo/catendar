@@ -26,6 +26,10 @@ func (a *CalendarApp) SetBoardEventPhase(id int64, phase string, day string) (*c
 	return a.calendar.SetBoardEventPhase(context.Background(), id, phase, day)
 }
 
+func (a *CalendarApp) ReorderBoardEvent(day string, phase string, id int64, beforeID int64) error {
+	return a.calendar.ReorderBoardEvent(context.Background(), day, phase, id, beforeID)
+}
+
 func (a *CalendarApp) CreateEvent(input calendar.EventInput) (*calendar.Event, error) {
 	return a.calendar.CreateEvent(context.Background(), input)
 }

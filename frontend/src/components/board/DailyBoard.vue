@@ -12,6 +12,7 @@ import { useSyncSourcesStore } from '@/stores/syncSources'
 import { sourceEmailUrl } from '@/utils/description'
 import EventDescription from '@/components/event/EventDescription.vue'
 import EventRegistrations from '@/components/event/EventRegistrations.vue'
+import ColumnColorPicker from '@/components/board/ColumnColorPicker.vue'
 
 const emit = defineEmits<{
   (event: 'edit', calendarEvent: CalendarEvent, focus?: EventEditField): void
@@ -109,6 +110,12 @@ function onPickerFocusOut(event: FocusEvent, id: number) {
 
 const draggingId = ref<number | null>(null)
 const dragTarget = ref<EventPhase | null>(null)
+const draggedPhase = ref<EventPhase | null>(null)
+const dropInsertion = ref<{ phase: EventPhase; beforeId: number; top: number } | null>(null)
+const reorderId = ref<number | null>(null)
+const rankAnnouncement = ref('')
+let dragEndedAt = -Infinity
+let dragControlTarget: Element | null = null
 
 watch(quickPhase, async phase => {
   emit('quick-state', Boolean(phase))
@@ -119,12 +126,18 @@ watch(quickPhase, async phase => {
 })
 
 watch(selectedDate, () => {
+  endDrag()
   openPhaseId.value = null
   activePhase.value = 'todo'
   selectedId.value = null
   for (const phase of eventPhases) lastColumnIds[phase] = []
   phaseMoveToken += 1
   phaseMoveId.value = null
+  draggingId.value = null
+  draggedPhase.value = null
+  dragTarget.value = null
+  dropInsertion.value = null
+  rankAnnouncement.value = ''
   if (quickPhase.value) closeQuick()
 })
 
@@ -243,52 +256,199 @@ async function submitQuick() {
   }
 }
 
+function isPhaseReordering(phase: EventPhase): boolean {
+  return eventsStore.isReordering(selectedDate.value, phase)
+}
+
+function canDragCard(calendarEvent: CalendarEvent): boolean {
+  return !eventsStore.isMoving(calendarEvent.id) &&
+    !isPhaseReordering(calendarEvent.phase) &&
+    reorderId.value == null &&
+    phaseMoveId.value == null
+}
+
+function isAppDrag(): boolean {
+  return draggingId.value != null
+}
+
+function noteCardPointerDown(event: PointerEvent) {
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest('.drag-grip')) {
+    dragControlTarget = null
+    return
+  }
+  dragControlTarget = target?.closest(
+    'a, button, input, label, select, textarea, [contenteditable="true"]'
+  ) ?? null
+}
+
 function startDrag(event: DragEvent, calendarEvent: CalendarEvent) {
-  if (eventsStore.isMoving(calendarEvent.id)) {
+  if (dragControlTarget) {
+    event.preventDefault()
+    dragControlTarget = null
+    return
+  }
+  if (!canDragCard(calendarEvent)) {
     event.preventDefault()
     return
   }
-  const target = event.target as HTMLElement | null
-  if (target?.closest('a, button, input, label')) {
+  const target = event.target instanceof Element ? event.target : null
+  const control = target?.closest('a, button, input, label, select, textarea, [contenteditable="true"]')
+  if (control && !control.closest('.drag-grip')) {
     event.preventDefault()
     return
   }
   openPhaseId.value = null
+  selectEvent(calendarEvent)
   draggingId.value = calendarEvent.id
+  draggedPhase.value = calendarEvent.phase
+  dragTarget.value = null
+  dropInsertion.value = null
+  dragEndedAt = -Infinity
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', String(calendarEvent.id))
+    event.dataTransfer.setData('application/x-catendar-task', String(calendarEvent.id))
+    if (event.currentTarget instanceof HTMLElement) {
+      event.dataTransfer.setDragImage(event.currentTarget, 16, 16)
+    }
   }
 }
 
 function endDrag() {
+  if (draggingId.value != null) dragEndedAt = performance.now()
   draggingId.value = null
+  draggedPhase.value = null
   dragTarget.value = null
+  dropInsertion.value = null
+  dragControlTarget = null
 }
 
-function dragOver(phase: EventPhase, event: DragEvent) {
-  if (!draggingId.value) return
+function reorderChangesOrder(events: CalendarEvent[], id: number | null, beforeId: number): boolean {
+  if (id == null) return false
+  const index = events.findIndex(item => item.id === id)
+  if (index < 0 || beforeId === id) return false
+  if (beforeId === 0) return index !== events.length - 1
+  const beforeIndex = events.findIndex(item => item.id === beforeId)
+  return beforeIndex >= 0 && beforeIndex !== index + 1
+}
+
+function resolveInsertion(phase: EventPhase, event: DragEvent) {
+  const column = event.currentTarget
+  if (!(column instanceof HTMLElement)) return null
+  const list = column.querySelector<HTMLElement>('.card-list')
+  if (!list || !(event.target instanceof Node) || !list.contains(event.target)) return null
+
+  let beforeId = 0
+  let boundary = list.getBoundingClientRect().top
+  for (const card of list.querySelectorAll<HTMLElement>('article[data-task-id]')) {
+    const rect = card.getBoundingClientRect()
+    if (event.clientY < rect.top + rect.height / 2) {
+      beforeId = Number(card.dataset.taskId)
+      boundary = rect.top - 3
+      break
+    }
+    boundary = rect.bottom + 2
+  }
+  if (!reorderChangesOrder(eventsForPhase(phase), draggingId.value, beforeId)) return null
+  return { phase, beforeId, top: Math.max(0, boundary - list.getBoundingClientRect().top + list.scrollTop) }
+}
+
+function autoScrollDuringDrag(event: DragEvent) {
+  const column = event.currentTarget
+  if (!(column instanceof HTMLElement)) return
+  const scrollers: HTMLElement[] = []
+  const list = column.querySelector<HTMLElement>('.card-list')
+  if (list) scrollers.push(list)
+  if (boardRef.value) scrollers.push(boardRef.value)
+  for (const scroller of scrollers) {
+    if (scroller.scrollHeight <= scroller.clientHeight + 1) continue
+    const rect = scroller.getBoundingClientRect()
+    if (event.clientY < rect.top + 34 && event.clientY >= rect.top) scroller.scrollTop -= 12
+    else if (event.clientY > rect.bottom - 34 && event.clientY <= rect.bottom) scroller.scrollTop += 12
+  }
+}
+
+function onColumnDragEnter(phase: EventPhase, event: DragEvent) {
+  if (!isAppDrag()) return
+  event.preventDefault()
+  if (draggedPhase.value !== phase) dragTarget.value = phase
+}
+
+function onColumnDragOver(phase: EventPhase, event: DragEvent) {
+  if (!isAppDrag()) return
+  event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
-  dragTarget.value = phase
+  autoScrollDuringDrag(event)
+  if (draggedPhase.value !== phase) {
+    dropInsertion.value = null
+    dragTarget.value = phase
+    return
+  }
+  dropInsertion.value = resolveInsertion(phase, event)
+  dragTarget.value = null
 }
 
 function dragLeave(phase: EventPhase, event: DragEvent) {
-  const column = event.currentTarget as HTMLElement | null
-  const related = event.relatedTarget as Node | null
-  if (column && related && column.contains(related)) return
+  if (!isAppDrag()) return
+  const column = event.currentTarget
+  const related = event.relatedTarget
+  if (column instanceof Node && related instanceof Node && column.contains(related)) return
   if (dragTarget.value === phase) dragTarget.value = null
+  if (dropInsertion.value?.phase === phase) dropInsertion.value = null
 }
 
-function dropOn(phase: EventPhase) {
+function onColumnDrop(phase: EventPhase, event: DragEvent) {
+  if (!isAppDrag()) return
+  event.preventDefault()
   const id = draggingId.value
-  dragTarget.value = null
-  draggingId.value = null
-  if (!id) return
+  const insertion = resolveInsertion(phase, event)
+  if (id == null) {
+    endDrag()
+    return
+  }
   const calendarEvent = dayEvents.value.find(item => item.id === id)
-  if (!calendarEvent) return
+  dragTarget.value = null
+  dropInsertion.value = null
+  if (!calendarEvent || calendarEvent.phase !== draggedPhase.value) {
+    endDrag()
+    return
+  }
   selectEvent(calendarEvent)
-  if (calendarEvent.phase === phase) return
-  void moveEvent(calendarEvent, phase)
+  if (calendarEvent.phase === phase) {
+    if (insertion) void reorderCard(calendarEvent, insertion.beforeId)
+  } else {
+    void moveEvent(calendarEvent, phase)
+  }
+  endDrag()
+}
+
+async function reorderCard(calendarEvent: CalendarEvent, beforeId: number) {
+  const phase = calendarEvent.phase
+  const day = selectedDate.value
+  const id = calendarEvent.id
+  if (eventsStore.isMoving(id) || isPhaseReordering(phase) || reorderId.value != null) return
+  reorderId.value = id
+  try {
+    await eventsStore.reorderBoardEvent(day, phase, id, beforeId)
+    if (selectedDate.value !== day) return
+    announceRank(id, phase)
+    await nextTick()
+    if (focusStillOnTask(id)) await focusSelection()
+  } catch (error) {
+    if (selectedDate.value !== day) return
+    const detail = error instanceof Error ? error.message : 'Could not reorder the task'
+    message.error(detail)
+  } finally {
+    if (reorderId.value === id) reorderId.value = null
+  }
+}
+
+function announceRank(id: number, phase: EventPhase) {
+  const events = eventsForPhase(phase)
+  const index = events.findIndex(item => item.id === id)
+  if (index < 0) return
+  rankAnnouncement.value = `${events[index].title} moved to position ${index + 1} of ${events.length} in ${phase}`
 }
 
 function choosePhase(calendarEvent: CalendarEvent, phase: EventPhase) {
@@ -310,6 +470,7 @@ async function moveEvent(calendarEvent: CalendarEvent, phase: EventPhase) {
 }
 
 function openEvent(calendarEvent: CalendarEvent) {
+  if (draggingId.value != null || performance.now() - dragEndedAt < 150) return
   selectEvent(calendarEvent)
   emit('edit', calendarEvent)
 }
@@ -367,6 +528,24 @@ function hasMeta(event: CalendarEvent): boolean {
 
 function hasRegistrations(event: CalendarEvent): boolean {
   return Boolean(event.registrations?.length)
+}
+
+function cardStyle(
+  calendarEvent: CalendarEvent,
+  phase: EventPhase,
+  index: number,
+  count: number
+): Record<string, string> {
+  const t = count > 1 ? 1 - index / (count - 1) : 0.5
+  const e = Math.pow(t, 1.25)
+  const strength = phase === 'done' ? 0.5 : 1
+  const background = (themeStore.isDark ? 3 + 11 * e : 2 + 8 * e) * strength
+  const edge = (themeStore.isDark ? 10 + 30 * e : 12 + 28 * e) * strength
+  return {
+    '--event-color': calendarEvent.color,
+    '--priority-fill': `${background.toFixed(2)}%`,
+    '--priority-edge': `${edge.toFixed(2)}%`
+  }
 }
 
 function eventsForPhase(phase: EventPhase): CalendarEvent[] {
@@ -565,6 +744,36 @@ async function moveSelectedPhase(direction: -1 | 1) {
   }
 }
 
+type RankDestination = 'up' | 'down' | 'first' | 'last'
+
+async function moveSelectedRank(destination: RankDestination) {
+  if (reorderId.value != null || phaseMoveId.value != null) return
+  const calendarEvent = selectedEvent.value
+  if (!calendarEvent || eventsStore.isMoving(calendarEvent.id) || isPhaseReordering(calendarEvent.phase)) return
+
+  const events = eventsForPhase(calendarEvent.phase)
+  const index = events.findIndex(item => item.id === calendarEvent.id)
+  if (index < 0) return
+
+  let beforeId: number | null = null
+  switch (destination) {
+    case 'up':
+      beforeId = index > 0 ? events[index - 1].id : null
+      break
+    case 'down':
+      beforeId = index < events.length - 1 ? events[index + 2]?.id ?? 0 : null
+      break
+    case 'first':
+      beforeId = index > 0 ? events[0].id : null
+      break
+    case 'last':
+      beforeId = index < events.length - 1 ? 0 : null
+      break
+  }
+  if (beforeId == null) return
+  await reorderCard(calendarEvent, beforeId)
+}
+
 function runShortcut(action: ShortcutAction): boolean {
   if (action === 'dismiss') {
     if (openPhaseId.value == null) return false
@@ -595,6 +804,18 @@ function runShortcut(action: ShortcutAction): boolean {
     case 'editDescription':
       editSelectedDescription()
       return true
+    case 'taskRaise':
+      void moveSelectedRank('up')
+      return true
+    case 'taskLower':
+      void moveSelectedRank('down')
+      return true
+    case 'taskFirst':
+      void moveSelectedRank('first')
+      return true
+    case 'taskLast':
+      void moveSelectedRank('last')
+      return true
     case 'phaseLeft':
       void moveSelectedPhase(-1)
       return true
@@ -624,41 +845,51 @@ defineExpose({
     class="board"
     :aria-label="`Tasks for ${calendarStore.dayLabel}`"
     @pointerdown.capture="syncSelectionFromFocus($event.target)"
+    @dragend="endDrag"
   >
+    <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ rankAnnouncement }}</p>
     <section
       v-for="column in columns"
       :key="column.phase"
       class="column"
       :class="{ dropping: dragTarget === column.phase, done: column.phase === 'done' }"
       :data-phase="column.phase"
+      :style="{ '--column-hue': themeStore.columnColor(column.phase) }"
       :data-active="activePhase === column.phase ? 'true' : 'false'"
       :aria-labelledby="`board-column-${column.phase}`"
-      @dragenter.prevent
-      @dragover.prevent="dragOver(column.phase, $event)"
+      @dragenter="onColumnDragEnter(column.phase, $event)"
+      @dragover="onColumnDragOver(column.phase, $event)"
       @dragleave="dragLeave(column.phase, $event)"
-      @drop.prevent="dropOn(column.phase)"
+      @drop="onColumnDrop(column.phase, $event)"
     >
       <header class="column-header">
         <h2 :id="`board-column-${column.phase}`">
           {{ column.phase }}
           <span class="column-count">{{ column.events.length }}</span>
         </h2>
-        <button
-          :ref="element => setAddButton(column.phase, element)"
-          type="button"
-          class="add-button"
-          tabindex="0"
-          :aria-label="`Add task to ${column.phase}`"
-          :title="`Add task to ${column.phase}`"
-          @click="openQuick(column.phase)"
-        >
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
-        </button>
+        <div class="column-actions">
+          <column-color-picker
+            :phase="column.phase"
+            :color="themeStore.columnColor(column.phase)"
+            @select="color => themeStore.setColumnColor(column.phase, color)"
+          />
+          <button
+            :ref="element => setAddButton(column.phase, element)"
+            type="button"
+            class="add-button"
+            tabindex="0"
+            :aria-label="`Add task to ${column.phase}`"
+            :title="`Add task to ${column.phase}`"
+            @click="openQuick(column.phase)"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>
+          </button>
+        </div>
       </header>
 
       <div class="card-list">
         <article
-          v-for="calendarEvent in column.events"
+          v-for="(calendarEvent, index) in column.events"
           :key="calendarEvent.id"
           class="card"
           :class="{
@@ -666,15 +897,29 @@ defineExpose({
             dragging: draggingId === calendarEvent.id,
             'no-meta': !hasMeta(calendarEvent) && !hasRegistrations(calendarEvent)
           }"
-          :style="{ '--event-color': calendarEvent.color }"
+          :style="cardStyle(calendarEvent, column.phase, index, column.events.length)"
           :data-task-id="calendarEvent.id"
           :data-selected="selectedId === calendarEvent.id ? 'true' : 'false'"
           :aria-current="selectedId === calendarEvent.id ? 'true' : undefined"
-          :draggable="!eventsStore.isMoving(calendarEvent.id)"
+          :draggable="canDragCard(calendarEvent)"
+          @pointerdown="noteCardPointerDown"
           @click="openEvent(calendarEvent)"
           @dragstart="startDrag($event, calendarEvent)"
           @dragend="endDrag"
         >
+          <span
+            aria-hidden="true"
+            class="drag-grip"
+            :draggable="canDragCard(calendarEvent)"
+            title="Drag to reorder"
+            @click.stop
+          >
+            <svg viewBox="0 0 8 14" aria-hidden="true">
+              <circle cx="2" cy="3" r="1" /><circle cx="6" cy="3" r="1" />
+              <circle cx="2" cy="7" r="1" /><circle cx="6" cy="7" r="1" />
+              <circle cx="2" cy="11" r="1" /><circle cx="6" cy="11" r="1" />
+            </svg>
+          </span>
           <h3 :class="{ bold: calendarEvent.bold }">
             <button type="button" class="edit-title" tabindex="0" @click.stop="openEvent(calendarEvent)">{{ calendarEvent.title }}</button>
           </h3>
@@ -780,6 +1025,13 @@ defineExpose({
           </div>
         </article>
 
+        <div
+          v-if="dropInsertion && dropInsertion.phase === column.phase"
+          class="drop-line"
+          :style="{ top: `${dropInsertion?.top ?? 0}px` }"
+          aria-hidden="true"
+        />
+
         <p
           v-if="column.events.length === 0 && quickPhase !== column.phase"
           class="empty"
@@ -852,6 +1104,7 @@ defineExpose({
 }
 
 .column {
+  --priority-hue: var(--column-hue);
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -859,6 +1112,11 @@ defineExpose({
   border-radius: 12px;
   background: var(--bg-secondary);
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+/* Lift the chosen hue against dark card surfaces while preserving its identity. */
+:global([data-theme='dark']) .column {
+  --priority-hue: color-mix(in srgb, var(--column-hue) 70%, white);
 }
 
 .column[data-active='true'] {
@@ -898,11 +1156,17 @@ defineExpose({
   font-weight: 500;
 }
 
+.column-actions {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 2px;
+}
+
 .add-button {
   display: grid;
   width: 26px;
   height: 26px;
-  margin-left: auto;
   padding: 0;
   flex: 0 0 auto;
   place-items: center;
@@ -935,6 +1199,7 @@ defineExpose({
 }
 
 .card-list {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1;
@@ -946,19 +1211,89 @@ defineExpose({
 
 .card {
   position: relative;
-  padding: 8px 10px 8px 14px;
+  padding: 8px 10px 8px 22px;
   border: 1px solid var(--border-soft);
+  border-top: 2px solid color-mix(in srgb, var(--priority-hue) var(--priority-edge), var(--border-soft));
   border-radius: 9px;
-  background: var(--bg-elevated);
+  background-color: color-mix(in srgb, var(--priority-hue) var(--priority-fill), var(--bg-elevated));
   box-shadow: var(--shadow-sm);
   cursor: pointer;
   outline: 0;
-  transition: border-color 140ms ease, opacity 140ms ease, transform 140ms ease;
+  transition: border-color 140ms ease, background-color 160ms ease, opacity 140ms ease, transform 140ms ease;
 }
 
 .card.no-meta {
   padding-right: 94px;
 }
+
+.drag-grip {
+  position: absolute;
+  top: 5px;
+  left: 8px;
+  display: grid;
+  width: 14px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.drag-grip svg {
+  width: 8px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.card:hover .drag-grip,
+.card:focus-within .drag-grip,
+.drag-grip:focus-visible {
+  opacity: 0.62;
+}
+
+.drag-grip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.drag-grip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+.card.dragging .drag-grip {
+  cursor: grabbing;
+  opacity: 0.45;
+}
+
+.drop-line {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  z-index: 4;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--priority-hue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--column-hue) 22%, transparent);
+  pointer-events: none;
+}
+.drop-line::before {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--priority-hue);
+  content: '';
+}
+
 
 .card::before {
   position: absolute;
@@ -1393,6 +1728,18 @@ defineExpose({
   line-height: 1.4;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 @media (max-width: 860px) {
   .board {
     gap: 9px;
@@ -1424,6 +1771,14 @@ defineExpose({
 @media (hover: none) {
   .phase-trigger {
     color: var(--text-secondary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .column,
+  .card,
+  .drag-grip {
+    transition: none;
   }
 }
 </style>

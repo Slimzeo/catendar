@@ -331,6 +331,10 @@ function handleShortcut(action: ShortcutAction, event: KeyboardEvent, tabOrigin:
     return true
   }
 
+  // The column palette owns its arrow, Tab and Escape keys while it is open.
+  if (target instanceof Element && target.closest('.column-color-picker[data-open="true"]')) return false
+  if (event.target instanceof Element && event.target.closest('.column-color-picker[data-open="true"]')) return false
+
   if (target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"], a[data-registration-link]')) {
     return false
   }

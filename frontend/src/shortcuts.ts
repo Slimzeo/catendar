@@ -15,7 +15,18 @@ export function defaultPhaseShortcuts(mac = macKeyboard) {
   return { phaseLeft: `${modifier}+ArrowLeft`, phaseRight: `${modifier}+ArrowRight` }
 }
 
+export function defaultTaskOrderShortcuts(mac = macKeyboard) {
+  const modifier = mac ? 'Alt' : 'Ctrl'
+  return {
+    taskRaise: `${modifier}+ArrowUp`,
+    taskLower: `${modifier}+ArrowDown`,
+    taskFirst: `${modifier}+Shift+ArrowUp`,
+    taskLast: `${modifier}+Shift+ArrowDown`
+  }
+}
+
 const phaseDefaults = defaultPhaseShortcuts()
+const orderDefaults = defaultTaskOrderShortcuts()
 
 export const SHORTCUT_DEFINITIONS = [
   { action: 'columnLeft', label: 'Previous column', group: 'navigation', defaultChord: 'Tab+ArrowLeft' },
@@ -36,6 +47,10 @@ export const SHORTCUT_DEFINITIONS = [
   { action: 'deleteTask', label: 'Delete task', group: 'actions', defaultChord: 'D' },
   { action: 'confirmDelete', label: 'Confirm delete', group: 'dialogs', defaultChord: 'Ctrl+D' },
   { action: 'editDescription', label: 'Edit description', group: 'actions', defaultChord: 'U' },
+  { action: 'taskRaise', label: 'Raise task', group: 'actions', defaultChord: orderDefaults.taskRaise },
+  { action: 'taskLower', label: 'Lower task', group: 'actions', defaultChord: orderDefaults.taskLower },
+  { action: 'taskFirst', label: 'Move task to top', group: 'actions', defaultChord: orderDefaults.taskFirst },
+  { action: 'taskLast', label: 'Move task to bottom', group: 'actions', defaultChord: orderDefaults.taskLast },
   { action: 'phaseLeft', label: 'Previous phase', group: 'date', defaultChord: phaseDefaults.phaseLeft },
   { action: 'phaseRight', label: 'Next phase', group: 'date', defaultChord: phaseDefaults.phaseRight },
   { action: 'previousDate', label: 'Previous date', group: 'date', defaultChord: 'ArrowLeft' },

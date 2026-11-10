@@ -6,6 +6,25 @@ import { randomEventColor } from '@/constants/eventColors'
 import { eventApi } from '@/services/api'
 import { useCalendarStore } from '@/stores/calendar'
 
+interface BoardReorder {
+  day: string
+  phase: EventPhase
+  id: number
+  beforeId: number
+}
+
+// Apply a relative move to the current rows so a simultaneous edit or refresh
+// can still contribute new field values and new cards.
+function movedBefore(rows: CalendarEvent[], move: BoardReorder): CalendarEvent[] {
+  const card = rows.find(row => row.id === move.id && row.phase === move.phase)
+  if (!card || move.id === move.beforeId) return rows
+  const rest = rows.filter(row => row.id !== card.id)
+  const at = move.beforeId === 0 ? rest.length : rest.findIndex(row => row.id === move.beforeId && row.phase === move.phase)
+  if (at < 0) return rows
+  rest.splice(at, 0, card)
+  return rest
+}
+
 export const useEventsStore = defineStore('events', () => {
   const calendar = useCalendarStore()
   const events = ref<CalendarEvent[]>([])
@@ -16,10 +35,16 @@ export const useEventsStore = defineStore('events', () => {
     ? `board/${calendar.focusedDate}` : `month/${calendar.currentMonth}`)
   const loadedScope = ref('')
   const moves = reactive(new Map<number, { scope: string; phase: EventPhase }>())
+  const reorders = reactive(new Map<string, BoardReorder>())
   let latestFetch = 0
 
   function boardEventsForDay(day: string): CalendarEvent[] {
-    return loadedScope.value === `board/${day}` ? events.value : []
+    if (loadedScope.value !== `board/${day}`) return []
+    let rows = events.value
+    for (const move of reorders.values()) {
+      if (move.day === day) rows = movedBefore(rows, move)
+    }
+    return rows
   }
 
   const eventsByDate = computed(() => {
@@ -127,6 +152,25 @@ export const useEventsStore = defineStore('events', () => {
     }
   }
 
+  function isReordering(day: string, phase: EventPhase): boolean {
+    return reorders.has(`${day}/${phase}`)
+  }
+
+  async function reorderBoardEvent(day: string, phase: EventPhase, id: number, beforeId: number) {
+    const board = `board/${day}`
+    const key = `${day}/${phase}`
+    if (scope.value !== board || loadedScope.value !== board || isReordering(day, phase) || id === beforeId) return
+    const move = { day, phase, id, beforeId }
+    reorders.set(key, move)
+    try {
+      await eventApi.reorderBoardEvent(day, phase, id, beforeId)
+      if (scope.value === board && loadedScope.value === board) events.value = movedBefore(events.value, move)
+    } finally {
+      reorders.delete(key)
+      if (scope.value === board) void fetchEvents()
+    }
+  }
+
   async function deleteEvent(id: number) {
     try {
       await eventApi.deleteEvent(id)
@@ -140,6 +184,6 @@ export const useEventsStore = defineStore('events', () => {
 
   return {
     scope, nextCreateColor, loading, error, eventsByDate, boardEventsForDay,
-    fetchEvents, createEvent, updateEvent, setEventPhase, deleteEvent, isMoving: (id: number) => moves.has(id)
+    fetchEvents, createEvent, updateEvent, setEventPhase, reorderBoardEvent, isReordering, deleteEvent, isMoving: (id: number) => moves.has(id)
   }
 })
