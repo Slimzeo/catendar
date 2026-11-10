@@ -18,6 +18,10 @@ export function GetEvents(arg1, arg2) {
   return window['go']['main']['CalendarApp']['GetEvents'](arg1, arg2);
 }
 
+export function ReorderBoardEvent(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['CalendarApp']['ReorderBoardEvent'](arg1, arg2, arg3, arg4);
+}
+
 export function SetBoardEventPhase(arg1, arg2, arg3) {
   return window['go']['main']['CalendarApp']['SetBoardEventPhase'](arg1, arg2, arg3);
 }

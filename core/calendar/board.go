@@ -31,6 +31,13 @@ const boardSchema = `
 	CREATE TABLE IF NOT EXISTS board_meta (
 		id INTEGER PRIMARY KEY CHECK (id = 1), seeded_at DATETIME NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS board_orders (
+		day TEXT NOT NULL, phase TEXT NOT NULL,
+		event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		PRIMARY KEY (phase, day, event_id),
+		UNIQUE (phase, day, position)
+	);
 `
 
 const eventFields = `title, start, end, color, all_day, description, result,
@@ -192,7 +199,7 @@ func (s *Service) GetBoardEvents(ctx context.Context, day string) ([]Event, erro
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, boardSelect+" ORDER BY start, id", day, s.now().Format(dateLayout))
+	rows, err := s.db.QueryContext(ctx, "SELECT v.*"+rankedBoardFrom+byBoardPriority, day, s.now().Format(dateLayout))
 	if err != nil {
 		return nil, fmt.Errorf("read daily board: %w", err)
 	}

@@ -21,10 +21,14 @@ function decodeBindings(raw: string, defaults: Bindings): Bindings {
     const chord = normalizeShortcut((saved as Record<string, unknown>)[action])
     if (chord && isBindableShortcut(chord, action)) bindings[action] = chord
   }
-  // Stored overrides may refer to a default that another action now uses.
-  return new Set(Object.values(bindings)).size === SHORTCUT_ACTIONS.length
-    ? bindings
-    : { ...defaults }
+  // Adding priority shortcuts must not invalidate an existing custom keymap.
+  // Leave a new action unassigned if an older action already owns its chord.
+  for (const action of ['taskRaise', 'taskLower', 'taskFirst', 'taskLast'] as const) {
+    if (normalizeShortcut((saved as Record<string, unknown>)[action])) continue
+    if (SHORTCUT_ACTIONS.some(other => other !== action && bindings[other] === bindings[action])) bindings[action] = ''
+  }
+  const assigned = Object.values(bindings).filter(Boolean)
+  return new Set(assigned).size === assigned.length ? bindings : { ...defaults }
 }
 
 function loadBindings(): Bindings {

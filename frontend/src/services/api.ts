@@ -19,6 +19,7 @@ import { normalizeRegistrations } from '@/utils/registrations'
 import {
   GetEvents,
   GetBoardEvents,
+  ReorderBoardEvent,
   CreateEvent,
   UpdateEvent,
   DeleteEvent,
@@ -85,6 +86,9 @@ export const eventApi = {
     const updated = await SetBoardEventPhase(id, phase, day)
     return normalizeEvent(updated)
   },
+
+  reorderBoardEvent: (day: string, phase: EventPhase, id: number, beforeId: number): Promise<void> =>
+    ReorderBoardEvent(day, phase, id, beforeId),
 
   deleteEvent: async (id: number): Promise<void> => {
     await DeleteEvent(id)

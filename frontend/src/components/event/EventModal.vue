@@ -36,6 +36,10 @@ const emit = defineEmits<{
 const titleInputRef = ref<{ focus: () => void } | null>(null)
 const descriptionInputRef = ref<{ focus: () => void } | null>(null)
 const resultInputRef = ref<{ focus: () => void } | null>(null)
+const formBodyRef = ref<HTMLElement | null>(null)
+const formErrorRef = ref<HTMLElement | null>(null)
+const registrationsExpanded = ref(false)
+const registrationPreviewLimit = 4
 const title = ref('')
 const description = ref('')
 const result = ref('')
@@ -83,8 +87,10 @@ watch(
     if (!show) return
     initializeForm()
     nextTick(() => {
+      if (formBodyRef.value) formBodyRef.value.scrollTop = 0
       if (props.initialFocus === 'registrations' && registrationDetails.value) {
-        registrationDetails.value.focus()
+        registrationDetails.value.focus({ preventScroll: true })
+        revealEditorElement(registrationDetails.value)
       } else if (props.initialFocus === 'description') {
         descriptionInputRef.value?.focus()
       } else if (props.initialFocus === 'result' && phase.value === 'progressing') {
@@ -97,10 +103,47 @@ watch(
   { immediate: true }
 )
 
+function revealEditorElement(element: HTMLElement | null) {
+  const body = formBodyRef.value
+  if (!element || !body) return
+  const bodyRect = body.getBoundingClientRect()
+  const elementRect = element.getBoundingClientRect()
+  const padding = 8
+  if (elementRect.height >= bodyRect.height - padding * 2) {
+    body.scrollTop += elementRect.top - bodyRect.top - padding
+    return
+  }
+  if (elementRect.top < bodyRect.top + padding) {
+    body.scrollTop -= bodyRect.top + padding - elementRect.top
+  } else if (elementRect.bottom > bodyRect.bottom - padding) {
+    body.scrollTop += elementRect.bottom - (bodyRect.bottom - padding)
+  }
+}
+
+async function toggleRegistrations() {
+  registrationsExpanded.value = !registrationsExpanded.value
+  await nextTick()
+  if (!registrationsExpanded.value) {
+    revealEditorElement(registrationDetails.value)
+    return
+  }
+  const row = registrationDetails.value?.querySelectorAll<HTMLElement>('li.registration')[registrationPreviewLimit]
+  if (!row) return
+  const focus = row.querySelector<HTMLElement>('a') ?? row
+  if (focus === row) row.tabIndex = -1
+  focus.focus({ preventScroll: true })
+  revealEditorElement(row)
+}
+
+function revealFormError() {
+  nextTick(() => revealEditorElement(formErrorRef.value))
+}
+
 function initializeForm() {
   formError.value = ''
   titleError.value = ''
   showCalendarDetails.value = false
+  registrationsExpanded.value = props.initialFocus === 'registrations'
   initializing = true
 
   try {
@@ -141,6 +184,7 @@ function initializeForm() {
 }
 
 function handleSave() {
+  if (props.saving) return
   const trimmedTitle = title.value.trim()
   formError.value = ''
   titleError.value = ''
@@ -154,17 +198,20 @@ function handleSave() {
   if (!startDate.value) {
     formError.value = 'Choose a date before saving.'
     showCalendarDetails.value = true
+    revealFormError()
     return
   }
   if (!allDay.value && !startTime.value) {
     formError.value = 'Choose a start time.'
     showCalendarDetails.value = true
+    revealFormError()
     return
   }
 
   const trimmedDeadline = deadline.value.trim()
   if (trimmedDeadline && !/^\d{4}-\d{2}-\d{2}$/.test(trimmedDeadline)) {
     formError.value = 'Use YYYY-MM-DD for the deadline.'
+    revealFormError()
     return
   }
 
@@ -182,6 +229,7 @@ function handleSave() {
     if (end < start) {
       formError.value = 'End must not be earlier than start.'
       showCalendarDetails.value = true
+      revealFormError()
       return
     }
   }
@@ -202,192 +250,228 @@ function handleSave() {
   emit('save', input)
 }
 
+function handleEditorKeydown(event: KeyboardEvent) {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+  if (event.key.toLowerCase() !== 's') return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.repeat || props.saving) return
+  handleSave()
+}
+
 </script>
 
 <template>
-  <n-modal :show="show" :mask-closable="!saving" :close-on-esc="!saving" @update:show="value => emit('update:show', value)">
+  <n-modal
+    :show="show"
+    :mask-closable="!saving"
+    :close-on-esc="!saving"
+    @update:show="value => emit('update:show', value)"
+  >
     <n-card
       class="event-card"
       :class="{ 'task-panel': isTask }"
-      :title="modalTitle"
       :bordered="false"
       closable
       :closable-disabled="saving"
+      content-class="event-content"
       @close="emit('update:show', false)"
     >
-      <form class="event-form" @submit.prevent="handleSave">
-        <div class="form-group">
-          <div class="label-row">
-            <label for="event-title">Title</label>
-            <button
-              type="button"
-              class="bold-button"
-              :class="{ active: bold }"
-              :aria-pressed="bold"
-              title="Emphasize title"
-              @click="bold = !bold"
-            >
-              B
-            </button>
-          </div>
-          <n-input
-            ref="titleInputRef"
-            v-model:value="title"
-            :input-props="{
-              id: 'event-title',
-              'aria-invalid': titleError ? 'true' : undefined,
-              'aria-describedby': titleError ? 'event-title-error' : undefined
-            }"
-            :placeholder="titlePlaceholder"
-            size="large"
-            :disabled="saving"
-            @input="titleError = ''; formError = ''"
-          />
-          <p v-if="titleError" id="event-title-error" class="field-error" role="alert">
-            {{ titleError }}
-          </p>
+      <template #header>
+        <div class="task-heading">
+          <span>{{ modalTitle }}</span>
+          <span v-if="isTask && event" class="task-heading-name" :title="title">{{ title }}</span>
         </div>
-
-        <div class="form-group description-field">
-          <label for="event-description">
-            Description
-            <span class="optional">{{ isTask ? 'Optional' : 'Links are clickable' }}</span>
-          </label>
-          <n-input
-            ref="descriptionInputRef"
-            v-model:value="description"
-            type="textarea"
-            :input-props="{ id: 'event-description' }"
-            placeholder="Notes, location, or meeting link"
-            :rows="3"
-            :disabled="saving"
-          />
-        </div>
-
-        <div v-if="phase === 'progressing'" class="form-group result-field">
-          <label for="event-result">
-            Result
-            <span class="optional">Optional</span>
-          </label>
-          <n-input
-            ref="resultInputRef"
-            v-model:value="result"
-            type="textarea"
-            :input-props="{ id: 'event-result' }"
-            placeholder="Outcome, progress, or next step"
-            :rows="3"
-            :disabled="saving"
-            @input="formError = ''"
-          />
-        </div>
-
-        <div v-else-if="phase === 'done' && result.trim()" class="form-group result-field">
-          <label>Result</label>
-          <div class="result-readonly">{{ result }}</div>
-        </div>
-
-        <div v-if="isEditing && registrations.length" class="form-group registrations-field">
-          <label>Registrations <span class="optional">{{ registrations.length }}</span></label>
-          <div ref="registrationDetails" class="registrations-box" role="group" aria-label="Activity deadlines" tabindex="-1">
-            <event-registrations :registrations="registrations" :context="title" />
-          </div>
-        </div>
-
-        <div class="form-row phase-row">
-          <div class="form-group deadline-field">
-            <label for="event-deadline">{{ registrations.length ? 'Task deadline' : 'Deadline' }} <span class="optional">Optional</span></label>
-            <div class="deadline-control">
-              <input
-                id="event-deadline"
-                v-model="deadline"
-                type="date"
-                class="time-input date-input"
-                aria-label="Deadline"
-                :disabled="saving"
-              />
+      </template>
+      <form id="event-form" class="event-form" @submit.prevent="handleSave" @keydown="handleEditorKeydown">
+        <div ref="formBodyRef" class="form-body">
+          <div class="form-group">
+            <div class="label-row">
+              <label for="event-title">Title</label>
               <button
-                v-if="deadline"
                 type="button"
-                class="clear-deadline"
-                :disabled="saving"
-                aria-label="Clear deadline"
-                @click="deadline = ''"
+                class="bold-button"
+                :class="{ active: bold }"
+                :aria-pressed="bold"
+                title="Emphasize title"
+                @click="bold = !bold"
               >
-                Clear
+                B
               </button>
             </div>
-          </div>
-          <div class="form-group phase-field">
-            <label>Phase</label>
-            <n-select
-              v-model:value="phase"
-              :options="phaseOptions"
+            <n-input
+              ref="titleInputRef"
+              v-model:value="title"
+              :input-props="{
+                id: 'event-title',
+                'aria-invalid': titleError ? 'true' : undefined,
+                'aria-describedby': titleError ? 'event-title-error' : undefined
+              }"
+              :placeholder="titlePlaceholder"
+              size="large"
               :disabled="saving"
-              aria-label="Phase"
+              @input="titleError = ''; formError = ''"
+            />
+            <p v-if="titleError" id="event-title-error" class="field-error" role="alert">
+              {{ titleError }}
+            </p>
+          </div>
+
+          <div class="form-row phase-row">
+            <div class="form-group deadline-field">
+              <label for="event-deadline">{{ registrations.length ? 'Task deadline' : 'Deadline' }} <span class="optional">Optional</span></label>
+              <div class="deadline-control">
+                <input
+                  id="event-deadline"
+                  v-model="deadline"
+                  type="date"
+                  class="time-input date-input"
+                  aria-label="Deadline"
+                  :disabled="saving"
+                />
+                <button
+                  v-if="deadline"
+                  type="button"
+                  class="clear-deadline"
+                  :disabled="saving"
+                  aria-label="Clear deadline"
+                  @click="deadline = ''"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div class="form-group phase-field">
+              <label>Phase</label>
+              <n-select
+                v-model:value="phase"
+                :options="phaseOptions"
+                :disabled="saving"
+                aria-label="Phase"
+              />
+            </div>
+          </div>
+
+          <div v-if="isTask" class="form-group color-field task-color-field">
+            <label>Color</label>
+            <color-palette-picker v-model="selectedColor" />
+          </div>
+
+          <div class="form-group description-field">
+            <label for="event-description">
+              Description
+              <span class="optional">{{ isTask ? 'Optional' : 'Links are clickable' }}</span>
+            </label>
+            <n-input
+              ref="descriptionInputRef"
+              v-model:value="description"
+              type="textarea"
+              :input-props="{ id: 'event-description' }"
+              placeholder="Notes, location, or meeting link"
+              :rows="3"
+              :disabled="saving"
             />
           </div>
-        </div>
 
-        <div class="calendar-details">
-          <button
-            v-if="isTask"
-            type="button"
-            class="details-toggle"
-            :aria-expanded="showCalendarDetails"
-            aria-controls="event-calendar-details"
-            @click="showCalendarDetails = !showCalendarDetails"
+          <div v-if="phase === 'progressing'" class="form-group result-field">
+            <label for="event-result">
+              Result
+              <span class="optional">Optional</span>
+            </label>
+            <n-input
+              ref="resultInputRef"
+              v-model:value="result"
+              type="textarea"
+              :input-props="{ id: 'event-result' }"
+              placeholder="Outcome, progress, or next step"
+              :rows="3"
+              :disabled="saving"
+              @input="formError = ''"
+            />
+          </div>
+
+          <div v-else-if="phase === 'done' && result.trim()" class="form-group result-field">
+            <label>Result</label>
+            <div class="result-readonly">{{ result }}</div>
+          </div>
+
+          <section
+            v-if="isEditing && registrations.length" ref="registrationDetails" class="form-group registrations-field"
+            role="group" aria-label="Activity deadlines" tabindex="-1"
           >
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
-            Calendar details
-          </button>
-
-          <div
-            v-show="!isTask || showCalendarDetails"
-            id="event-calendar-details"
-            class="calendar-details-body"
-          >
-            <div class="form-row date-row">
-              <div class="form-group date-field">
-                <label>Date</label>
-                <n-date-picker
-                  v-model:value="startDate"
-                  type="date"
-                  :disabled="saving"
-                  style="width: 100%"
-                />
-              </div>
-              <label class="all-day-control">
-                <span>
-                  <strong>All day</strong>
-                  <small>Hide start and end times</small>
-                </span>
-                <n-switch v-model:value="allDay" :disabled="saving" />
-              </label>
+            <div class="registration-heading">
+              <h3>Registrations <span class="optional">{{ registrations.length }}</span></h3>
+              <button
+                v-if="registrations.length > registrationPreviewLimit" type="button" class="registration-toggle"
+                aria-controls="task-registrations" :aria-expanded="registrationsExpanded" @click="toggleRegistrations"
+              >{{ registrationsExpanded ? 'Show fewer' : `View all ${registrations.length} activities` }}</button>
             </div>
-
-            <div v-if="!allDay" class="form-row time-row">
-              <div class="form-group">
-                <label for="event-start-time">Start time</label>
-                <input id="event-start-time" v-model="startTime" type="time" class="time-input" :disabled="saving" />
-              </div>
-              <div class="form-group">
-                <label for="event-end-time">End time <span class="optional">Optional</span></label>
-                <input id="event-end-time" v-model="endTime" type="time" class="time-input" :disabled="saving" />
-              </div>
-              <div class="form-group">
-                <label for="event-end-date">End date</label>
-                <input id="event-end-date" v-model="endDate" type="date" class="time-input date-input" :disabled="saving" />
-              </div>
+            <div id="task-registrations" class="registrations-box">
+              <event-registrations :registrations="registrations" :limit="registrationsExpanded ? undefined : registrationPreviewLimit" :context="title" />
             </div>
+          </section>
 
-            <div class="form-group color-field">
-              <label>Color</label>
-              <color-palette-picker v-model="selectedColor" />
+          <div class="calendar-details">
+            <button
+              v-if="isTask"
+              type="button"
+              class="details-toggle"
+              :aria-expanded="showCalendarDetails"
+              aria-controls="event-calendar-details"
+              @click="showCalendarDetails = !showCalendarDetails"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5 5.5-5 5.5" /></svg>
+              Calendar details
+            </button>
+
+            <div
+              v-show="!isTask || showCalendarDetails"
+              id="event-calendar-details"
+              class="calendar-details-body"
+            >
+              <div class="form-row date-row">
+                <div class="form-group date-field">
+                  <label>Date</label>
+                  <n-date-picker
+                    v-model:value="startDate"
+                    type="date"
+                    :disabled="saving"
+                    style="width: 100%"
+                  />
+                </div>
+                <label class="all-day-control">
+                  <span>
+                    <strong>All day</strong>
+                    <small>Hide start and end times</small>
+                  </span>
+                  <n-switch v-model:value="allDay" :disabled="saving" />
+                </label>
+              </div>
+
+              <div v-if="!allDay" class="form-row time-row">
+                <div class="form-group">
+                  <label for="event-start-time">Start time</label>
+                  <input id="event-start-time" v-model="startTime" type="time" class="time-input" :disabled="saving" />
+                </div>
+                <div class="form-group">
+                  <label for="event-end-time">End time <span class="optional">Optional</span></label>
+                  <input id="event-end-time" v-model="endTime" type="time" class="time-input" :disabled="saving" />
+                </div>
+                <div class="form-group">
+                  <label for="event-end-date">End date</label>
+                  <input id="event-end-date" v-model="endDate" type="date" class="time-input date-input" :disabled="saving" />
+                </div>
+              </div>
+
+              <div v-if="!isTask" class="form-group color-field">
+                <label>Color</label>
+                <color-palette-picker v-model="selectedColor" />
+              </div>
             </div>
           </div>
-        </div>
 
-        <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+          <p v-if="formError" ref="formErrorRef" class="form-error" role="alert">{{ formError }}</p>
+        </div>
 
         <footer class="form-actions">
           <n-button v-if="event" type="error" ghost :disabled="saving" @click="emit('request-delete', event)">Delete</n-button>
@@ -395,7 +479,7 @@ function handleSave() {
 
           <div class="primary-actions">
             <n-button :disabled="saving" @click="emit('update:show', false)">Cancel</n-button>
-            <n-button type="primary" attr-type="submit" :loading="saving">
+            <n-button type="primary" attr-type="submit" form="event-form" :loading="saving">
               {{ submitLabel }}
             </n-button>
           </div>
@@ -407,19 +491,26 @@ function handleSave() {
 
 <style scoped>
 .event-card {
+  display: flex;
   width: min(520px, calc(100vw - 28px));
   max-height: calc(100vh - 24px);
-  overflow-y: auto;
+  max-height: calc(100dvh - 24px);
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.task-panel {
+.event-card.task-panel {
   position: fixed;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
+  top: 58px;
+  right: 8px;
+  bottom: 8px;
+  left: auto;
   display: flex;
-  width: min(440px, calc(100vw - 24px));
+  width: min(440px, calc(100vw - 16px));
+  height: calc(100vh - 66px);
+  height: calc(100dvh - 66px);
   max-height: none;
+  margin: 0;
   flex-direction: column;
   overflow: hidden;
 }
@@ -429,17 +520,28 @@ function handleSave() {
   padding: 14px 18px 10px;
 }
 
-.event-card :deep(.n-card__content) {
+.event-card :deep(.event-content) {
+  display: flex;
   min-height: 0;
-  padding: 0 18px 18px;
+  padding: 0;
   flex: 1 1 auto;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .event-form {
   display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
+}
+
+.form-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .form-group {
@@ -525,6 +627,7 @@ function handleSave() {
 }
 
 .deadline-control .date-input {
+  min-width: 0;
   flex: 1;
 }
 
@@ -597,6 +700,7 @@ function handleSave() {
 
 .time-input {
   width: 100%;
+  min-width: 0;
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
@@ -631,6 +735,55 @@ function handleSave() {
   margin-bottom: 17px;
 }
 
+.task-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.task-heading > :first-child { flex: none; }
+.event-card :deep(.n-card-header__main) { min-width: 0; }
+.task-heading-name {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registration-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0 7px;
+  gap: 8px;
+  background: var(--n-color-modal, var(--bg-elevated));
+}
+
+.registration-heading h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.registration-toggle {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.registration-toggle:focus-visible { outline: 2px solid var(--focus-ring); }
 .registrations-box {
   --registration-font-size: 12px;
   padding: 7px 9px;
@@ -714,6 +867,10 @@ function handleSave() {
   margin-bottom: 0;
 }
 
+.color-field.task-color-field {
+  margin-bottom: 17px;
+}
+
 .form-error {
   margin: 0 0 10px;
   color: var(--danger-color);
@@ -723,12 +880,14 @@ function handleSave() {
 
 .form-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 8px;
-  padding-top: 16px;
+  margin-top: 0;
+  padding: 14px 18px 18px;
   border-top: 1px solid var(--border-soft);
+  background: var(--bg-elevated);
 }
 
 .primary-actions {
@@ -737,11 +896,13 @@ function handleSave() {
 }
 
 @media (max-width: 640px) {
-  .task-panel {
+  .event-card.task-panel {
     inset: 0;
     width: 100%;
     max-width: none;
-    height: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
     margin: 0;
     border-radius: 0;
     box-shadow: none;
@@ -751,8 +912,16 @@ function handleSave() {
     padding: 12px 16px 8px;
   }
 
-  .event-card :deep(.n-card__content) {
-    padding: 0 16px 16px;
+  .event-card :deep(.event-content) {
+    padding: 0;
+  }
+
+  .form-body {
+    padding: 0 16px;
+  }
+
+  .form-actions {
+    padding: 12px 16px 16px;
   }
 }
 
@@ -770,14 +939,33 @@ function handleSave() {
     margin-top: 0;
   }
 
+  .form-actions { gap: 8px; }
+}
+
+@media (max-height: 320px) {
   .form-actions {
-    align-items: stretch;
-    flex-direction: column-reverse;
+    gap: 8px;
+    padding: 8px 14px 10px;
   }
 
-  .primary-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+  .form-body {
+    padding: 0 14px;
+  }
+}
+
+@media (max-height: 240px) {
+  .event-card.task-panel {
+    height: 100vh;
+    height: 100dvh;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(440px, 100vw);
+    max-height: none;
+  }
+
+  .event-card :deep(.n-card-header) {
+    padding: 8px 14px 5px;
   }
 }
 </style>

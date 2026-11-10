@@ -1,17 +1,40 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { eventColors } from '@/constants/eventColors'
 
+const props = withDefaults(defineProps<{ label?: string; compact?: boolean }>(), { label: 'Event color' })
+const focused = ref<string>('')
 const model = defineModel<string>({ required: true })
 
 const availableColors = computed(() => {
   if (eventColors.some(color => color.value === model.value)) return eventColors
   return [{ name: 'Current color', value: model.value }, ...eventColors]
 })
+
+function navigate(event: KeyboardEvent) {
+  const group = event.currentTarget as HTMLElement
+  const radios = Array.from(group.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+  const index = radios.indexOf(document.activeElement as HTMLButtonElement)
+  if (index < 0) return
+  const step = props.compact ? 5 : 1
+  const moves: Record<string, number> = {
+    ArrowLeft: index - 1, ArrowRight: index + 1,
+    ArrowUp: index - step, ArrowDown: index + step,
+    Home: 0, End: radios.length - 1
+  }
+  if (!(event.key in moves)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const next = (moves[event.key] + radios.length) % radios.length
+  radios[next].focus({ preventScroll: true })
+}
 </script>
 
 <template>
-  <div class="color-grid" role="radiogroup" aria-label="Event color">
+  <div
+    class="color-grid" :class="{ compact }" role="radiogroup" :aria-label="label"
+    @keydown="navigate" @focusout="focused = ''"
+  >
     <button
       v-for="item in availableColors"
       :key="item.value"
@@ -20,6 +43,8 @@ const availableColors = computed(() => {
       :class="{ selected: model === item.value }"
       :style="{ '--swatch-color': item.value }"
       :aria-label="item.name"
+      :tabindex="(focused || model) === item.value ? 0 : -1"
+      @focus="focused = item.value"
       :aria-checked="model === item.value"
       role="radio"
       :title="item.name"
@@ -77,4 +102,14 @@ const availableColors = computed(() => {
   stroke-linejoin: round;
   stroke-width: 2.2;
 }
+
+.color-grid.compact {
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 6px;
+  padding: 4px;
+}
+
+.compact .color-swatch { width: 22px; height: 22px; }
+.compact .color-swatch svg { width: 13px; height: 13px; }
 </style>

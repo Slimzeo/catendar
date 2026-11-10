@@ -119,3 +119,15 @@ test('invalid saved data leaves a usable, unambiguous keymap', () => {
     assert.deepEqual({ ...useShortcutsStore().bindings }, keys.DEFAULT_SHORTCUTS)
   }
 })
+
+test('existing custom keys survive the addition of priority commands', () => {
+  saved.set('catendar-shortcuts-v2', JSON.stringify({ taskDown: 'Alt+ArrowDown', quickAdd: 'Q' }))
+  const shortcuts = useShortcutsStore()
+  assert.equal(shortcuts.bindings.taskDown, 'Alt+ArrowDown')
+  assert.equal(shortcuts.bindings.quickAdd, 'Q')
+  assert.equal(shortcuts.bindings.taskLower, '')
+  assert.equal(shortcuts.bindings.taskRaise, 'Alt+ArrowUp')
+  assert.equal(shortcuts.setBinding('taskLower', 'F8').ok, true)
+  setActivePinia(createPinia())
+  assert.equal(useShortcutsStore().bindings.taskLower, 'F8')
+})

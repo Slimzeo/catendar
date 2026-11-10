@@ -9,6 +9,7 @@ const props = withDefaults(defineProps<{
   registrations?: EventRegistration[]
   compact?: boolean
   context?: string
+  limit?: number
 }>(), {
   registrations: () => [],
   compact: false,
@@ -19,19 +20,20 @@ const emit = defineEmits<{ (event: 'show-all'): void }>()
 const calendar = useCalendarStore()
 const compactLimit = 3
 const activities = computed(() => orderedRegistrations(props.registrations, calendar.focusedDate))
-const rows = computed(() => {
-  const visible = props.compact ? activities.value.slice(0, compactLimit) : activities.value
-  return visible.map(registration => ({
-    registration,
-    url: safeRegistrationUrl(registration.url),
-    registrationDue: registration.deadlineText || registration.deadline,
-    submissionDue: registration.submissionDeadlineText || registration.submissionDeadline
-  }))
-})
+const rows = computed(() => activities.value.slice(0, props.compact ? compactLimit : props.limit).map(toRow))
 
 const label = computed(() => (
   props.context ? `Registrations for ${props.context}` : 'Registrations'
 ))
+
+function toRow(registration: EventRegistration) {
+  return {
+    registration,
+    url: safeRegistrationUrl(registration.url),
+    registrationDue: registration.deadlineText || registration.deadline,
+    submissionDue: registration.submissionDeadlineText || registration.submissionDeadline
+  }
+}
 
 function openRegistration(url: string | undefined) {
   if (!url) return
@@ -41,7 +43,7 @@ function openRegistration(url: string | undefined) {
 
 <template>
   <ul class="registrations" :class="{ compact }" :aria-label="label">
-    <li v-for="(row, index) in rows" :key="`${row.registration.name}-${index}`" class="registration">
+    <li v-for="(row, index) in rows" :key="`primary-${index}-${row.registration.name}`" class="registration">
       <a
         v-if="row.url"
         :href="row.url"
@@ -62,7 +64,7 @@ function openRegistration(url: string | undefined) {
         <span v-if="!row.registrationDue && !row.submissionDue" class="registration-deadline unknown">Deadline unknown</span>
       </span>
     </li>
-    <li v-if="props.compact && activities.length > compactLimit">
+    <li v-if="compact && activities.length > compactLimit">
       <button type="button" class="registration-more" @click.stop="emit('show-all')">View all {{ activities.length }} activities</button>
     </li>
   </ul>
@@ -156,25 +158,42 @@ function openRegistration(url: string | undefined) {
 }
 
 .registrations:not(.compact) .registration {
-  flex-wrap: wrap;
-  align-items: baseline;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
 }
 
 .registrations:not(.compact) .registration-link,
 .registrations:not(.compact) .registration-name {
-  overflow: visible;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-  white-space: normal;
-}
-
-.registrations:not(.compact) .registration-times,
-.registrations:not(.compact) .registration-deadline {
   max-width: 100%;
   overflow: visible;
   overflow-wrap: anywhere;
   text-overflow: clip;
   white-space: normal;
+}
+
+.registrations:not(.compact) .registration-link {
+  align-items: flex-start;
+}
+
+.registrations:not(.compact) .external-icon {
+  margin-top: 4px;
+}
+
+.registrations:not(.compact) .registration-times,
+.registrations:not(.compact) .registration-deadline {
+  max-width: 100%;
+  width: 100%;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.registrations:not(.compact) .registration-times {
+  margin-left: 0;
+  align-items: flex-start;
+  gap: 1px;
 }
 
 .registration-more {
@@ -186,5 +205,12 @@ function openRegistration(url: string | undefined) {
   color: var(--primary-color);
   cursor: pointer;
   font-size: calc(var(--registration-font-size, 11.5px) - 1px);
+  text-align: left;
+}
+
+.registration-more:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 </style>

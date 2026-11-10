@@ -10,6 +10,8 @@ export function GetBoardEvents(arg1:string):Promise<Array<calendar.Event>>;
 
 export function GetEvents(arg1:string,arg2:string):Promise<Array<calendar.Event>>;
 
+export function ReorderBoardEvent(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
+
 export function SetBoardEventPhase(arg1:number,arg2:string,arg3:string):Promise<calendar.Event>;
 
 export function SetEventPhase(arg1:number,arg2:string):Promise<calendar.Event>;
