@@ -105,7 +105,7 @@ function handleOverflowSelect(key: string) {
 <template>
   <header class="toolbar" :class="{ 'native-mac': isNativeMac }">
     <button class="brand" type="button" title="Go to today" aria-label="Go to today" @click="calendarStore.goToToday">
-      <img src="/catendar.png" alt="" />
+      <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name"><strong>cat</strong>endar</span>
     </button>
 
@@ -344,11 +344,14 @@ function handleOverflowSelect(key: string) {
   outline-offset: 2px;
 }
 
-.brand img {
+.brand-mark {
+  display: block;
+  flex: none;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
-  box-shadow: var(--shadow-sm);
+  background-color: var(--primary-color);
+  -webkit-mask: url('/catendar.png') center / contain no-repeat;
+  mask: url('/catendar.png') center / contain no-repeat;
 }
 
 .brand-name {
@@ -516,7 +519,7 @@ function handleOverflowSelect(key: string) {
     padding: 6px;
   }
 
-  .brand img {
+  .brand-mark {
     width: 27px;
     height: 27px;
   }
